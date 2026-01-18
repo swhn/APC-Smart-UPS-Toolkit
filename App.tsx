@@ -527,6 +527,8 @@ const App: React.FC = () => {
                   upsData={upsData}
                   setUpsData={setUpsData}
                   setIsSimulating={setIsSimulating}
+                  config={sysConfig}
+                  onUpdateConfig={handleUpdateConfig}
               />
           );
       case TabId.EVENTS_LOGS:
