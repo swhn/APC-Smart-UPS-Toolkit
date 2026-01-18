@@ -1,0 +1,5 @@
+{
+  "name": "APC Smart UPS Toolkit",
+  "description": "A high-performance, visual-first Glass Cockpit interface for APC Smart-UPS control and monitoring.",
+  "requestFramePermissions": []
+}
