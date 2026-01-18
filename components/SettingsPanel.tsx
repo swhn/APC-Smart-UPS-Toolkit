@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { AppSettings, SystemConfiguration, UPSData, UserProfile, LayoutType, LayoutDef, Device } from '../types';
+import { AppSettings, SystemConfiguration, UPSData, UserProfile, LayoutType, LayoutDef, Device, UPSConfig } from '../types';
 import { RACK_LAYOUTS } from '../constants';
 
 interface Props {
@@ -34,8 +34,10 @@ const SettingsPanel: React.FC<Props> = ({
   
   // --- LOCAL DRAFT STATES ---
   
-  // Network Draft
-  const [draftSnmp, setDraftSnmp] = useState(settings.snmp);
+  // Network/UPS Registry Draft
+  const [draftRegistry, setDraftRegistry] = useState<UPSConfig[]>(settings.upsRegistry);
+  const [editingUpsId, setEditingUpsId] = useState<string | 'NEW' | null>(null);
+  const [tempUpsConfig, setTempUpsConfig] = useState<UPSConfig | null>(null);
   const [networkStatus, setNetworkStatus] = useState<'IDLE' | 'TESTING' | 'SUCCESS' | 'FAILURE'>('IDLE');
   const [networkMsg, setNetworkMsg] = useState('');
 
@@ -66,7 +68,7 @@ const SettingsPanel: React.FC<Props> = ({
 
   // --- SYNC EFFECTS ---
   useEffect(() => {
-     setDraftSnmp(settings.snmp);
+     setDraftRegistry(settings.upsRegistry);
      setDraftTheme(settings.system.themeMode);
      setDraftAudible(settings.system.enableAudibleAlarms);
      setDraftHost(settings.host);
@@ -87,28 +89,79 @@ const SettingsPanel: React.FC<Props> = ({
 
   // --- HANDLERS ---
 
-  // 1. Network Handlers
-  const handleNetworkChange = (field: keyof AppSettings['snmp'], value: any) => {
-    setDraftSnmp(prev => ({ ...prev, [field]: value }));
-    setNetworkStatus('IDLE');
+  // 1. Network / UPS Registry Handlers
+  const handleEditUps = (id: string) => {
+      const ups = draftRegistry.find(u => u.id === id);
+      if (ups) {
+          setTempUpsConfig({ ...ups });
+          setEditingUpsId(id);
+          setNetworkStatus('IDLE');
+      }
   };
 
-  const handleSaveNetwork = () => {
-    onRequestSecureAction(() => {
-        setNetworkStatus('TESTING');
-        setNetworkMsg('Initiating SNMP Handshake...');
-        setTimeout(() => {
-            const isValidIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(draftSnmp.targetIp);
-            if (isValidIp && draftSnmp.targetIp !== '0.0.0.0') {
-                setNetworkStatus('SUCCESS');
-                setNetworkMsg('Connection Verified. Settings Saved.');
-                onUpdateSettings({ ...settings, snmp: draftSnmp });
-            } else {
-                setNetworkStatus('FAILURE');
-                setNetworkMsg('Connection Failed: Invalid IP or Unreachable.');
-            }
-        }, 1500);
-    }, "Modify Core Network Configuration");
+  const handleNewUps = () => {
+      setTempUpsConfig({
+          id: `ups_${Date.now()}`,
+          name: 'New UPS Unit',
+          targetIp: '',
+          community: 'public',
+          port: 161,
+          timeout: 3000,
+          pollingInterval: 5000
+      });
+      setEditingUpsId('NEW');
+      setNetworkStatus('IDLE');
+  };
+
+  const handleDeleteUps = (id: string) => {
+      if (!confirm("Are you sure you want to remove this UPS configuration?")) return;
+      
+      onRequestSecureAction(() => {
+          const updated = draftRegistry.filter(u => u.id !== id);
+          onUpdateSettings({ ...settings, upsRegistry: updated });
+          setEditingUpsId(null);
+      }, "Remove UPS Unit from Registry");
+  };
+
+  const handleTempUpsChange = (field: keyof UPSConfig, value: any) => {
+      if (tempUpsConfig) {
+          setTempUpsConfig({ ...tempUpsConfig, [field]: value });
+      }
+  };
+
+  const handleSaveUps = () => {
+      if (!tempUpsConfig) return;
+
+      onRequestSecureAction(() => {
+          setNetworkStatus('TESTING');
+          setNetworkMsg('Initiating SNMP Handshake...');
+          
+          setTimeout(() => {
+              const isValidIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(tempUpsConfig.targetIp);
+              
+              if (isValidIp && tempUpsConfig.targetIp !== '0.0.0.0') {
+                  setNetworkStatus('SUCCESS');
+                  setNetworkMsg('Connection Verified. Settings Saved.');
+                  
+                  let updatedRegistry = [...draftRegistry];
+                  if (editingUpsId === 'NEW') {
+                      updatedRegistry.push(tempUpsConfig);
+                  } else {
+                      updatedRegistry = updatedRegistry.map(u => u.id === editingUpsId ? tempUpsConfig : u);
+                  }
+                  
+                  onUpdateSettings({ ...settings, upsRegistry: updatedRegistry });
+                  
+                  setTimeout(() => {
+                      setEditingUpsId(null);
+                      setTempUpsConfig(null);
+                  }, 1000);
+              } else {
+                  setNetworkStatus('FAILURE');
+                  setNetworkMsg('Connection Failed: Invalid IP or Unreachable.');
+              }
+          }, 1000);
+      }, editingUpsId === 'NEW' ? "Add New UPS Unit" : "Update UPS Configuration");
   };
 
   // 2. Hardware Handlers
@@ -285,36 +338,90 @@ const SettingsPanel: React.FC<Props> = ({
             {activeSection} SETTINGS
         </h2>
 
+        {/* --- NETWORK / UPS MANAGEMENT SECTION --- */}
         {activeSection === 'NETWORK' && (
-            <div className="max-w-md space-y-6">
-                <div className="p-4 bg-black/50 border border-gray-800 rounded">
-                    <div className="grid grid-cols-1 gap-4">
-                        <InputField label="TARGET IP ADDRESS" value={draftSnmp.targetIp} onChange={v => handleNetworkChange('targetIp', v)} />
-                        <InputField label="COMMUNITY STRING" value={draftSnmp.community} onChange={v => handleNetworkChange('community', v)} type="password"/>
-                        <div className="grid grid-cols-2 gap-4">
-                            <InputField label="PORT" value={draftSnmp.port} onChange={v => handleNetworkChange('port', parseInt(v))} type="number"/>
-                            <InputField label="TIMEOUT (ms)" value={draftSnmp.timeout} onChange={v => handleNetworkChange('timeout', parseInt(v))} type="number"/>
-                        </div>
-                        <InputField label="POLLING INTERVAL (ms)" value={draftSnmp.pollingInterval} onChange={v => handleNetworkChange('pollingInterval', parseInt(v))} type="number"/>
-                    </div>
-                </div>
+            <div className="max-w-xl space-y-6">
                 
-                <div className="pt-4 border-t border-gray-800">
-                    <button 
-                        onClick={handleSaveNetwork} 
-                        disabled={networkStatus === 'TESTING'} 
-                        className={`w-full py-3 px-4 font-mono font-bold text-xs rounded transition-colors
-                            ${networkStatus === 'TESTING' ? 'bg-gray-800 text-gray-500' : 'bg-neon-cyan text-black hover:bg-white'}
-                        `}
-                    >
-                        {networkStatus === 'TESTING' ? 'VERIFYING...' : 'SAVE & CONNECT'}
-                    </button>
-                    {networkStatus !== 'IDLE' && (
-                        <div className={`mt-4 p-3 border rounded text-xs font-mono whitespace-pre-line ${networkStatus === 'SUCCESS' ? 'bg-green-900/20 border-green-500 text-green-400' : networkStatus === 'FAILURE' ? 'bg-red-900/20 border-red-500 text-red-500' : 'bg-gray-800'}`}>
-                            {networkMsg}
+                {/* List View */}
+                {!editingUpsId && (
+                    <>
+                        <div className="bg-black/50 border border-gray-800 rounded overflow-hidden">
+                            <div className="grid grid-cols-12 bg-gray-900 p-3 text-[10px] font-mono text-gray-500 font-bold tracking-wider">
+                                <div className="col-span-4">NAME</div>
+                                <div className="col-span-4">TARGET IP</div>
+                                <div className="col-span-4 text-right">ACTIONS</div>
+                            </div>
+                            <div className="divide-y divide-gray-800">
+                                {draftRegistry.map(ups => (
+                                    <div key={ups.id} className="grid grid-cols-12 p-3 items-center hover:bg-white/5 transition-colors">
+                                        <div className="col-span-4 text-xs font-bold text-white font-mono">{ups.name}</div>
+                                        <div className="col-span-4 text-xs font-mono text-neon-cyan">{ups.targetIp}</div>
+                                        <div className="col-span-4 flex justify-end gap-2">
+                                            <button onClick={() => handleEditUps(ups.id)} className="px-2 py-1 text-[10px] border border-gray-600 hover:border-white text-gray-400 hover:text-white rounded transition-colors">EDIT</button>
+                                            <button onClick={() => handleDeleteUps(ups.id)} className="px-2 py-1 text-[10px] border border-red-900 text-red-500 hover:bg-red-900/20 rounded transition-colors">DEL</button>
+                                        </div>
+                                    </div>
+                                ))}
+                                {draftRegistry.length === 0 && (
+                                    <div className="p-6 text-center text-gray-600 font-mono text-xs italic">
+                                        No UPS units configured. Add one to begin monitoring.
+                                    </div>
+                                )}
+                            </div>
                         </div>
-                    )}
-                </div>
+                        <button 
+                            onClick={handleNewUps}
+                            className="w-full py-3 border border-dashed border-gray-700 text-gray-400 hover:border-neon-cyan hover:text-neon-cyan font-mono text-xs transition-colors rounded"
+                        >
+                            + ADD NEW UPS UNIT
+                        </button>
+                    </>
+                )}
+
+                {/* Edit View */}
+                {editingUpsId && tempUpsConfig && (
+                    <div className="bg-black/50 border border-gray-800 rounded p-6 relative animate-fade-in">
+                        <button onClick={() => setEditingUpsId(null)} className="absolute top-4 right-4 text-gray-500 hover:text-white">✕</button>
+                        <h3 className="text-white font-mono text-sm mb-6 border-b border-gray-800 pb-2">
+                            {editingUpsId === 'NEW' ? 'ADD NEW UPS' : 'EDIT CONFIGURATION'}
+                        </h3>
+                        
+                        <div className="space-y-4">
+                            <InputField label="DISPLAY NAME" value={tempUpsConfig.name} onChange={v => handleTempUpsChange('name', v)} placeholder="e.g. Server Room Rack 1" />
+                            <InputField label="TARGET IP ADDRESS" value={tempUpsConfig.targetIp} onChange={v => handleTempUpsChange('targetIp', v)} placeholder="192.168.1.50" />
+                            <InputField label="COMMUNITY STRING" value={tempUpsConfig.community} onChange={v => handleTempUpsChange('community', v)} type="password"/>
+                            
+                            <div className="grid grid-cols-2 gap-4">
+                                <InputField label="PORT" value={tempUpsConfig.port} onChange={v => handleTempUpsChange('port', parseInt(v))} type="number"/>
+                                <InputField label="TIMEOUT (ms)" value={tempUpsConfig.timeout} onChange={v => handleTempUpsChange('timeout', parseInt(v))} type="number"/>
+                            </div>
+                            <InputField label="POLLING INTERVAL (ms)" value={tempUpsConfig.pollingInterval} onChange={v => handleTempUpsChange('pollingInterval', parseInt(v))} type="number"/>
+                        </div>
+
+                        <div className="pt-6 mt-6 border-t border-gray-800 flex gap-4">
+                            <button 
+                                onClick={() => setEditingUpsId(null)}
+                                className="flex-1 py-3 text-xs font-mono border border-transparent text-gray-500 hover:text-white hover:border-gray-600 rounded"
+                            >
+                                CANCEL
+                            </button>
+                            <button 
+                                onClick={handleSaveUps}
+                                disabled={networkStatus === 'TESTING'} 
+                                className={`flex-1 py-3 font-mono font-bold text-xs rounded transition-colors
+                                    ${networkStatus === 'TESTING' ? 'bg-gray-800 text-gray-500' : 'bg-neon-cyan text-black hover:bg-white'}
+                                `}
+                            >
+                                {networkStatus === 'TESTING' ? 'VERIFYING...' : 'SAVE & CONNECT'}
+                            </button>
+                        </div>
+                        {networkStatus !== 'IDLE' && (
+                            <div className={`mt-4 p-3 border rounded text-xs font-mono whitespace-pre-line ${networkStatus === 'SUCCESS' ? 'bg-green-900/20 border-green-500 text-green-400' : networkStatus === 'FAILURE' ? 'bg-red-900/20 border-red-500 text-red-500' : 'bg-gray-800'}`}>
+                                {networkMsg}
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         )}
 

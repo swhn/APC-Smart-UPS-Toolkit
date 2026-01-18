@@ -120,14 +120,20 @@ export interface SecuritySettings {
     requireTwoFactor: boolean; // Placeholder for future UI
 }
 
-export interface AppSettings {
-  snmp: {
+export interface UPSConfig {
+    id: string;
+    name: string; // User friendly name e.g. "Server Room Main"
     targetIp: string;
     community: string;
     port: number;
     timeout: number;
     pollingInterval: number;
-  };
+}
+
+export interface AppSettings {
+  // Registry of all monitored UPS units
+  upsRegistry: UPSConfig[];
+  
   users: UserProfile[];
   system: {
     refreshRate: number;
@@ -142,6 +148,10 @@ export interface AppSettings {
   };
   security: SecuritySettings;
 }
+
+// Helper maps for the App
+export type DeviceStatusMap = Record<string, 'ONLINE' | 'OFFLINE' | 'CHECKING' | 'UNKNOWN'>;
+export type SequenceCountdownMap = Record<string, number>;
 
 export enum TabId {
   COMMAND_DECK = 'COMMAND_DECK',

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Device, SystemConfiguration, ShutdownMethod, LayoutType } from '../types';
+import { Device, SystemConfiguration, ShutdownMethod, LayoutType, DeviceStatusMap } from '../types';
 import { DeviceControlService } from '../services/DeviceControlService';
 import { RACK_LAYOUTS } from '../constants';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -10,9 +10,10 @@ interface Props {
   onUpdateConfig: (newConfig: SystemConfiguration) => void;
   onRequestSecureAction: (callback: () => void, description: string) => void;
   onDirtyChange?: (isDirty: boolean) => void;
+  deviceStatuses: DeviceStatusMap;
 }
 
-const VirtualRack: React.FC<Props> = ({ config, onUpdateConfig, onRequestSecureAction, onDirtyChange }) => {
+const VirtualRack: React.FC<Props> = ({ config, onUpdateConfig, onRequestSecureAction, onDirtyChange, deviceStatuses }) => {
   
   // --- Local Draft State ---
   // We initialize from the global config, but all edits happen locally until "Save" is clicked.
@@ -221,10 +222,13 @@ const VirtualRack: React.FC<Props> = ({ config, onUpdateConfig, onRequestSecureA
     const isOccupied = devices.length > 0;
     const isMulti = devices.length > 1;
 
+    // Helper to get real-time status
+    const getDeviceStatus = (d: Device) => deviceStatuses[d.id] || d.status || 'ONLINE';
+
     // Aggregate stats
     const totalPower = devices.reduce((sum, d) => sum + (d.powerDraw || 0), 0);
-    const isShuttingDown = devices.some(d => d.status === 'SHUTTING_DOWN');
-    const isOffline = devices.every(d => d.status === 'OFFLINE') && isOccupied;
+    const isShuttingDown = devices.some(d => getDeviceStatus(d) === 'SHUTTING_DOWN');
+    const isOffline = devices.every(d => getDeviceStatus(d) === 'OFFLINE') && isOccupied;
     
     // LED Status
     const ledColor = isOccupied
@@ -288,11 +292,11 @@ const VirtualRack: React.FC<Props> = ({ config, onUpdateConfig, onRequestSecureA
                         <div className="flex flex-col items-center w-full gap-1">
                             <div className="text-[9px] md:text-[10px] text-gray-400 font-mono">{devices[0].powerDraw}W</div>
                             <div className={`text-[8px] md:text-[9px] font-mono font-bold uppercase tracking-tighter ${
-                                devices[0].status === 'ONLINE' ? 'text-green-400' : 
-                                devices[0].status === 'SHUTTING_DOWN' ? 'text-yellow-400 animate-pulse' : 
+                                getDeviceStatus(devices[0]) === 'ONLINE' ? 'text-green-400' : 
+                                getDeviceStatus(devices[0]) === 'SHUTTING_DOWN' ? 'text-yellow-400 animate-pulse' : 
                                 'text-red-500'
                             }`}>
-                                {devices[0].status || 'ONLINE'}
+                                {getDeviceStatus(devices[0])}
                             </div>
                         </div>
                     </div>
@@ -453,41 +457,46 @@ const VirtualRack: React.FC<Props> = ({ config, onUpdateConfig, onRequestSecureA
                       Staging area empty. Add devices or drag from rack.
                   </div>
               )}
-              {localRack.unassignedDevices.map(device => (
-                  <div 
-                      key={device.id}
-                      draggable
-                      onDragStart={(e) => handleDragStart(e, device.id)}
-                      className="min-w-[140px] p-3 rounded border border-gray-700 bg-gray-800 hover:border-neon-cyan cursor-grab active:cursor-grabbing group relative"
-                  >
-                      {/* Delete Button */}
-                      <button 
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteDevice(device.id);
-                        }}
-                        className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center bg-gray-900 text-gray-500 hover:text-red-500 hover:bg-black rounded border border-transparent hover:border-red-900 z-10 transition-colors"
-                        title="Delete Device"
+              {localRack.unassignedDevices.map(device => {
+                  const status = deviceStatuses[device.id] || device.status || 'ONLINE';
+                  return (
+                      <div 
+                          key={device.id}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, device.id)}
+                          className="min-w-[140px] p-3 rounded border border-gray-700 bg-gray-800 hover:border-neon-cyan cursor-grab active:cursor-grabbing group relative"
                       >
-                          <span className="text-xs leading-none">×</span>
-                      </button>
+                          {/* Delete Button */}
+                          <button 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteDevice(device.id);
+                            }}
+                            className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center bg-gray-900 text-gray-500 hover:text-red-500 hover:bg-black rounded border border-transparent hover:border-red-900 z-10 transition-colors"
+                            title="Delete Device"
+                          >
+                              <span className="text-xs leading-none">×</span>
+                          </button>
 
-                      <div className="flex items-center justify-between mb-2">
-                          <span className={`w-2 h-2 rounded-full ${
-                              device.type === 'SERVER' ? 'bg-blue-500' :
-                              device.type === 'NETWORK' ? 'bg-green-500' : 'bg-orange-500'
-                          }`}></span>
-                          <span className="text-[10px] text-gray-500">{device.powerDraw}W</span>
+                          <div className="flex items-center justify-between mb-2">
+                              <span className={`w-2 h-2 rounded-full ${
+                                  device.type === 'SERVER' ? 'bg-blue-500' :
+                                  device.type === 'NETWORK' ? 'bg-green-500' : 'bg-orange-500'
+                              }`}></span>
+                              <span className="text-[10px] text-gray-500">{device.powerDraw}W</span>
+                          </div>
+                          <div className="text-xs text-white font-mono font-bold truncate mb-1 pr-4">{device.name}</div>
+                          <div className="text-[9px] text-gray-400 font-mono truncate">{device.shutdownMethod}</div>
+                          
+                          {/* Connection Status Dot from Status Map */}
+                          <div className={`absolute bottom-1 right-1 w-1.5 h-1.5 rounded-full ${
+                              status === 'ONLINE' ? 'bg-green-500 shadow-[0_0_4px_lime]' :
+                              status === 'CHECKING' ? 'bg-blue-500 animate-pulse' :
+                              'bg-red-500'
+                          }`} title={`Status: ${status}`}></div>
                       </div>
-                      <div className="text-xs text-white font-mono font-bold truncate mb-1 pr-4">{device.name}</div>
-                      <div className="text-[9px] text-gray-400 font-mono truncate">{device.shutdownMethod}</div>
-                      
-                      {/* Connection Verification Dot */}
-                      {device.connectionStatus === 'VERIFIED' && (
-                          <div className="absolute bottom-1 right-1 w-1.5 h-1.5 bg-green-500 rounded-full shadow-[0_0_4px_lime]" title="Verified Connection"></div>
-                      )}
-                  </div>
-              ))}
+                  );
+              })}
           </div>
       </div>
 
@@ -630,6 +639,9 @@ const VirtualRack: React.FC<Props> = ({ config, onUpdateConfig, onRequestSecureA
                               <div>
                                   <div className="text-sm font-bold text-white">{dev.name}</div>
                                   <div className="text-xs text-gray-500">{dev.type} | {dev.ipAddress || 'No IP'}</div>
+                                  <div className={`text-[10px] mt-1 ${
+                                      deviceStatuses[dev.id] === 'ONLINE' ? 'text-green-500' : 'text-red-500'
+                                  }`}>{deviceStatuses[dev.id] || 'ONLINE'}</div>
                               </div>
                               <button 
                                 onClick={() => {

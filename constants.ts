@@ -160,13 +160,17 @@ export const INITIAL_SYS_CONFIG: SystemConfiguration = {
 };
 
 export const INITIAL_SETTINGS: AppSettings = {
-  snmp: {
-    targetIp: '192.168.1.50',
-    community: 'public',
-    port: 161,
-    timeout: 3000,
-    pollingInterval: 5000 // Faster polling for real usage
-  },
+  upsRegistry: [
+      {
+          id: 'ups_primary',
+          name: 'Primary Rack UPS',
+          targetIp: '192.168.1.50',
+          community: 'public',
+          port: 161,
+          timeout: 3000,
+          pollingInterval: 5000
+      }
+  ],
   users: [
     { id: 'u1', username: 'admin', password: 'password123', role: 'ADMIN', lastLogin: '2023-10-27 09:00:00' },
     { id: 'u2', username: 'operator_1', password: 'op', role: 'OPERATOR', lastLogin: '2023-10-26 14:30:00' }

@@ -1,15 +1,17 @@
 
 import React, { useState, useEffect } from 'react';
-import { SystemConfiguration } from '../types';
+import { SystemConfiguration, DeviceStatusMap, SequenceCountdownMap } from '../types';
 import { RACK_LAYOUTS } from '../constants';
 
 interface Props {
   config: SystemConfiguration;
   onUpdateConfig: (newConfig: SystemConfiguration) => void;
   onDirtyChange?: (isDirty: boolean) => void;
+  deviceStatuses: DeviceStatusMap;
+  activeCountdowns: SequenceCountdownMap;
 }
 
-const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyChange }) => {
+const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyChange, deviceStatuses, activeCountdowns }) => {
   // --- Draft State ---
   const [draftSequence, setDraftSequence] = useState(config.phoenixProtocol.shutdownSequence);
   const [draftThreshold, setDraftThreshold] = useState(config.phoenixProtocol.shutdownThreshold);
@@ -270,18 +272,28 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                         // Ideally we show the sequence order based on DRAFT values
                         const draftSeq = getDraftSequenceInfo(entity.id);
                         const isEnabled = !!draftSeq;
+
+                        // Real-time status for active countdowns
+                        const currentCountdown = activeCountdowns[entity.id];
+                        const isOffline = deviceStatuses[entity.id] === 'OFFLINE';
                         
                         return (
                             <div 
                                 key={entity.id} 
-                                className={`flex items-center gap-4 p-3 rounded border transition-all duration-300
+                                className={`flex items-center gap-4 p-3 rounded border transition-all duration-300 relative overflow-hidden
                                     ${isEnabled 
                                         ? 'bg-black border-neon-cyan/50 shadow-[0_0_10px_rgba(0,240,255,0.05)]' 
                                         : 'bg-black/20 border-gray-800 opacity-60 hover:opacity-100'}
+                                    ${currentCountdown !== undefined && currentCountdown > 0 ? 'border-red-500 bg-red-900/10' : ''}
                                 `}
                             >
+                                {/* Active Countdown Overlay */}
+                                {currentCountdown !== undefined && currentCountdown > 0 && (
+                                    <div className="absolute inset-0 z-0 bg-red-900/10 animate-pulse pointer-events-none"></div>
+                                )}
+
                                 {/* Enable Toggle */}
-                                <div className="shrink-0">
+                                <div className="shrink-0 z-10">
                                     <input 
                                         type="checkbox"
                                         checked={isEnabled}
@@ -291,12 +303,12 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                                 </div>
 
                                 {/* Sequence Number (only if enabled) */}
-                                <div className={`w-8 font-mono text-lg font-bold text-center ${isEnabled ? 'text-white' : 'text-gray-700'}`}>
+                                <div className={`w-8 font-mono text-lg font-bold text-center z-10 ${isEnabled ? 'text-white' : 'text-gray-700'}`}>
                                     {isEnabled ? (draftSequence.sort((a,b) => a.delaySeconds - b.delaySeconds).findIndex(s => s.deviceId === entity.id) + 1) : '-'}
                                 </div>
 
                                 {/* Icon / Type Indicator */}
-                                <div className={`w-10 h-10 flex items-center justify-center rounded bg-gray-900 border ${isHardCut ? 'border-red-900 text-red-500' : 'border-blue-900 text-blue-500'}`}>
+                                <div className={`w-10 h-10 flex items-center justify-center rounded bg-gray-900 border z-10 ${isHardCut ? 'border-red-900 text-red-500' : 'border-blue-900 text-blue-500'}`}>
                                     {isHardCut ? (
                                         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
                                     ) : (
@@ -305,7 +317,7 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                                 </div>
 
                                 {/* Details */}
-                                <div className="flex-1 min-w-0">
+                                <div className="flex-1 min-w-0 z-10">
                                     <div className="flex items-center gap-2">
                                         <div className="text-sm font-bold text-white truncate">{entity.name}</div>
                                         {/* Badge for Type */}
@@ -318,6 +330,9 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                                                 {entity.type === 'BANK' ? 'SWITCH BANK' : 'OUTLET CUT'}
                                             </span>
                                         )}
+                                        {isOffline && (
+                                             <span className="text-[9px] bg-red-900/40 text-red-400 border border-red-900 px-1 rounded">OFFLINE</span>
+                                        )}
                                     </div>
                                     <div className="text-xs text-gray-500 font-mono truncate">
                                         {isHardCut 
@@ -329,19 +344,28 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                                     </div>
                                 </div>
 
-                                {/* Delay Input */}
-                                <div className="flex items-center gap-2 bg-gray-900 px-3 py-1 rounded border border-gray-700">
-                                    <span className="text-[10px] text-gray-500 font-mono uppercase">Delay</span>
-                                    <input 
-                                        type="number"
-                                        min="0"
-                                        disabled={!isEnabled}
-                                        value={isEnabled ? draftSeq?.delaySeconds : ''}
-                                        onChange={(e) => updateDelayLocal(entity.id, parseInt(e.target.value))}
-                                        className="w-16 bg-transparent text-right font-mono text-neon-cyan font-bold focus:outline-none disabled:text-gray-700"
-                                        placeholder="-"
-                                    />
-                                    <span className="text-xs text-gray-500">sec</span>
+                                {/* Countdown / Delay Display */}
+                                <div className="flex items-center gap-2 bg-gray-900 px-3 py-1 rounded border border-gray-700 z-10">
+                                    {currentCountdown !== undefined && currentCountdown > 0 ? (
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[10px] text-red-500 font-mono animate-pulse font-bold">SHUTDOWN IN</span>
+                                            <span className="text-lg text-red-500 font-mono font-bold">{currentCountdown}s</span>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <span className="text-[10px] text-gray-500 font-mono uppercase">Delay</span>
+                                            <input 
+                                                type="number"
+                                                min="0"
+                                                disabled={!isEnabled}
+                                                value={isEnabled ? draftSeq?.delaySeconds : ''}
+                                                onChange={(e) => updateDelayLocal(entity.id, parseInt(e.target.value))}
+                                                className="w-16 bg-transparent text-right font-mono text-neon-cyan font-bold focus:outline-none disabled:text-gray-700"
+                                                placeholder="-"
+                                            />
+                                            <span className="text-xs text-gray-500">sec</span>
+                                        </>
+                                    )}
                                 </div>
                             </div>
                         );
