@@ -22,7 +22,24 @@ export interface UPSData {
   batteryNominalVoltage: number; // e.g. 24, 48, 192 (Used to calc cells)
 }
 
-export type ShutdownMethod = 'SSH' | 'HTTP_POST' | 'SNMP_SET' | 'HARD_CUT';
+export type ShutdownMethod = 
+  | 'SSH'           // Generic Linux/Unix
+  | 'HTTP_POST'     // Generic Webhook
+  | 'SNMP_SET'      // Network Gear
+  | 'VMWARE_REST'   // ESXi / vCenter
+  | 'SYNOLOGY_API'  // Synology NAS
+  | 'QNAP_API'      // QNAP NAS
+  | 'NUT_CLIENT'    // Network UPS Tools
+  | 'AGENT_WIN'     // Custom Windows Agent
+  | 'AGENT_LINUX'   // Custom Linux Agent
+  | 'HARD_CUT';     // PDU/Outlet Cut
+
+export interface DeviceAuth {
+    username?: string;
+    password?: string;
+    community?: string; // SNMP
+    secretKey?: string; // Agents / Webhooks
+}
 
 export interface Device {
   id: string;
@@ -30,6 +47,7 @@ export interface Device {
   type: 'SERVER' | 'NETWORK' | 'STORAGE' | 'OTHER';
   ipAddress?: string; // New field for connection
   shutdownMethod: ShutdownMethod; // Protocol used to shut down
+  auth?: DeviceAuth; // Target device credentials
   status?: 'ONLINE' | 'OFFLINE' | 'SHUTTING_DOWN'; // Track status
   connectionStatus?: 'VERIFIED' | 'FAILED' | 'UNKNOWN'; // Network status
   assignedOutlet?: number;
@@ -71,6 +89,12 @@ export interface LayoutDef {
     controlType?: 'INDIVIDUAL' | 'GROUP';
 }
 
+export interface ShutdownRule {
+    deviceId: string;
+    type: 'TIMER' | 'BATTERY'; // Timer = seconds after outage, Battery = capacity % threshold
+    threshold: number; 
+}
+
 // Configuration Schema for "Virtual Rack" and "Phoenix Protocol"
 export interface SystemConfiguration {
   virtualRack: {
@@ -88,11 +112,8 @@ export interface SystemConfiguration {
       delaySeconds: number; // Seconds after power restore
       action: 'POWER_ON' | 'WOL' | 'PING_CHECK';
     }[];
-    shutdownSequence: {
-      deviceId: string;
-      delaySeconds: number; // Seconds after shutdown threshold reached
-    }[];
-    shutdownThreshold: number; // Battery percentage to trigger shutdown
+    shutdownSequence: ShutdownRule[]; // Updated to new rule structure
+    shutdownThreshold: number; // Global fail-safe threshold (usually hard cut)
   };
   breakerLimitAmps: number;
   batteryConfigOverride?: {
@@ -151,7 +172,14 @@ export interface AppSettings {
 
 // Helper maps for the App
 export type DeviceStatusMap = Record<string, 'ONLINE' | 'OFFLINE' | 'CHECKING' | 'UNKNOWN'>;
-export type SequenceCountdownMap = Record<string, number>;
+
+// Updated to support mixed display types (Timer vs Percentage status)
+export interface ActiveTriggerInfo {
+    rule: ShutdownRule;
+    currentValue: number; // Seconds elapsed or Current Battery %
+    isMet: boolean;
+}
+export type SequenceCountdownMap = Record<string, ActiveTriggerInfo>;
 
 export enum TabId {
   COMMAND_DECK = 'COMMAND_DECK',
@@ -159,9 +187,10 @@ export enum TabId {
   SHUTDOWN_SEQUENCER = 'SHUTDOWN_SEQUENCER',
   DIAGNOSTICS = 'DIAGNOSTICS',
   ENERGY_MONITOR = 'ENERGY_MONITOR',
-  SIMULATION = 'SIMULATION', // New Tab
+  SIMULATION = 'SIMULATION', 
   EVENTS_LOGS = 'EVENTS_LOGS',
   SETTINGS = 'SETTINGS',
+  HELP = 'HELP', // New Tab
 }
 
 export type SystemNode = 'GRID' | 'UPS' | 'LOAD' | 'BATTERY';

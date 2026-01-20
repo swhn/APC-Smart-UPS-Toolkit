@@ -1,0 +1,9 @@
+
+{
+  "name": "apc-snmp-simulator",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "net-snmp": "^3.10.0"
+  }
+}

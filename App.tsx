@@ -10,10 +10,12 @@ import EnergyMonitor from './components/EnergyMonitor';
 import EventsLog from './components/EventsLog';
 import SettingsPanel from './components/SettingsPanel';
 import SimulationLab from './components/SimulationLab';
+import HelpCenter from './components/HelpCenter';
 import LoginScreen from './components/LoginScreen';
 import { DeviceControlService } from './services/DeviceControlService';
 import { SnmpManager } from './services/snmpManager';
 import { StorageService, EnergyPoint } from './services/StorageService';
+import { NotificationProvider, useNotification } from './context/NotificationContext';
 
 // --- Vector Icons ---
 const IconDeck = (props: React.SVGProps<SVGSVGElement>) => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>;
@@ -26,16 +28,20 @@ const IconSettings = (props: React.SVGProps<SVGSVGElement>) => <svg xmlns="http:
 const IconLogout = (props: React.SVGProps<SVGSVGElement>) => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>;
 const IconBell = (props: React.SVGProps<SVGSVGElement>) => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>;
 const IconLab = (props: React.SVGProps<SVGSVGElement>) => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M10 2v7.31"></path><path d="M14 2v7.31"></path><path d="M8.5 2h7"></path><path d="M14 9.3a6.5 6.5 0 1 1-4 0V2"></path></svg>;
+const IconHelp = (props: React.SVGProps<SVGSVGElement>) => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>;
 
-const App: React.FC = () => {
+const MainAppContent: React.FC = () => {
   // Authentication State
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const { notify } = useNotification();
   
   // Security State
   const [failedLoginAttempts, setFailedLoginAttempts] = useState(0);
   const [lockoutEndTime, setLockoutEndTime] = useState<number | null>(null);
 
   const [activeTab, setActiveTab] = useState<TabId>(TabId.COMMAND_DECK);
+  // Help Context State
+  const [helpContext, setHelpContext] = useState<string | undefined>(undefined);
   
   // -- PERSISTENT STATE --
   const [sysConfig, setSysConfig] = useState<SystemConfiguration>(INITIAL_SYS_CONFIG);
@@ -52,11 +58,21 @@ const App: React.FC = () => {
 
   // -- REAL-TIME STATUS STATE (Volatile) --
   const [deviceStatuses, setDeviceStatuses] = useState<DeviceStatusMap>({});
+  
+  // New: Active Countdown now stores rich status info about the trigger (Time remaining OR Batt %)
   const [activeCountdowns, setActiveCountdowns] = useState<SequenceCountdownMap>({});
+  
+  // New: Track outage start time to calculate timer-based delays
+  const [outageStartTime, setOutageStartTime] = useState<number | null>(null);
+  
+  // Using a Ref to track triggered devices ensures immediate, synchronous access 
+  // inside the setInterval loop, preventing stale closures and duplicate firings.
+  const triggeredDevicesRef = useRef<Set<string>>(new Set());
 
   const [isSimulating, setIsSimulating] = useState(false);
   
-  const [shutdownTriggered, setShutdownTriggered] = useState(false);
+  // Protocol State
+  const [shutdownTriggered, setShutdownTriggered] = useState(false); // Used for Global Alert
   const [protocolLog, setProtocolLog] = useState<string[]>([]);
   const [eventLogs, setEventLogs] = useState<LogEntry[]>([
       { id: 'l1', timestamp: new Date().toLocaleTimeString(), message: 'System Initialized.', severity: 'INFO', source: 'SYSTEM' }
@@ -85,8 +101,29 @@ const App: React.FC = () => {
   const snmpManagersRef = useRef<Map<string, SnmpManager>>(new Map());
   
   // Timers
-  const idleTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const protocolTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const protocolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // --- LOGGING HELPER (Hoisted) ---
+  const addEvent = (message: string, severity: LogEntry['severity'] = 'INFO', source: LogEntry['source'] = 'SYSTEM') => {
+      const timestamp = new Date().toLocaleTimeString();
+      const newLog: LogEntry = {
+          id: `log-${Date.now()}-${Math.random()}`,
+          timestamp,
+          message,
+          severity,
+          source
+      };
+      setEventLogs(prev => [newLog, ...prev]);
+      setProtocolLog(prev => [`[${timestamp}] ${message}`, ...prev].slice(0, 10));
+      if (!isLogOpen && severity !== 'INFO') setHasNewLogs(true);
+  };
+
+  // --- HELP NAVIGATION HANDLER ---
+  const handleNavigateToHelp = (context: string) => {
+      setHelpContext(context);
+      setActiveTab(TabId.HELP);
+  };
 
   // --- INITIAL LOAD ---
   useEffect(() => {
@@ -96,20 +133,6 @@ const App: React.FC = () => {
         const loadedEnergy = await StorageService.loadEnergyHistory();
 
         setSysConfig(loadedConfig);
-        
-        // Data Migration: If loading old settings with 'snmp' object, move to upsRegistry
-        if ((loadedSettings as any).snmp && (!loadedSettings.upsRegistry || loadedSettings.upsRegistry.length === 0)) {
-            const oldSnmp = (loadedSettings as any).snmp;
-            loadedSettings.upsRegistry = [{
-                id: 'ups_legacy',
-                name: 'Main UPS',
-                targetIp: oldSnmp.targetIp,
-                community: oldSnmp.community,
-                port: oldSnmp.port,
-                timeout: oldSnmp.timeout,
-                pollingInterval: oldSnmp.pollingInterval
-            }];
-        }
         
         // Ensure registry is valid
         if (!loadedSettings.upsRegistry || loadedSettings.upsRegistry.length === 0) {
@@ -141,14 +164,13 @@ const App: React.FC = () => {
       const checkHeartbeats = async () => {
           const allDevices = [
               ...sysConfig.virtualRack.unassignedDevices,
-              ...Object.values(sysConfig.virtualRack.outlets).flat()
+              ...(Object.values(sysConfig.virtualRack.outlets) as Device[][]).flat()
           ];
 
           if (allDevices.length === 0) return;
 
           const updates: DeviceStatusMap = {};
 
-          // If simulating, randomize status occasionally for effect
           if (isSimulating) {
               allDevices.forEach(d => {
                   updates[d.id] = Math.random() > 0.95 ? 'OFFLINE' : 'ONLINE';
@@ -157,92 +179,117 @@ const App: React.FC = () => {
               return;
           }
 
-          // Real Connection Check
           await Promise.all(allDevices.map(async (d) => {
-               // Mark as checking
-               setDeviceStatuses(prev => ({ ...prev, [d.id]: 'CHECKING' }));
-               const isOnline = await DeviceControlService.verifyConnection(d);
-               updates[d.id] = isOnline ? 'ONLINE' : 'OFFLINE';
+               // Only check connectivity if not already shutting down or offline from trigger
+               if (!triggeredDevicesRef.current.has(d.id)) {
+                   setDeviceStatuses(prev => ({ ...prev, [d.id]: 'CHECKING' }));
+                   const isOnline = await DeviceControlService.verifyConnection(d);
+                   updates[d.id] = isOnline ? 'ONLINE' : 'OFFLINE';
+               }
           }));
 
           setDeviceStatuses(prev => ({ ...prev, ...updates }));
       };
 
-      const interval = setInterval(checkHeartbeats, 10000); // Check every 10s
-      checkHeartbeats(); // Initial check
+      const interval = setInterval(checkHeartbeats, 10000); 
+      checkHeartbeats(); 
 
       return () => clearInterval(interval);
   }, [currentUser, sysConfig.virtualRack, isSimulating]);
 
 
-  // --- PHOENIX PROTOCOL ENGINE (SHUTDOWN LOGIC) ---
+  // --- PHOENIX PROTOCOL & DYNAMIC LOAD SHEDDING ENGINE ---
   useEffect(() => {
-    // 1. Trigger Logic
-    if (!currentUser || shutdownTriggered) return;
+    if (!currentUser) return;
+
+    // Detect Outage State
+    const isOnBattery = currentUpsData.status === 'ON_BATTERY' || currentUpsData.status === 'LOW_BATTERY';
     
-    // Check if current ACTIVE UPS meets threshold (Global policy based on active view, 
-    // real app might want separate policies per UPS)
-    if (currentUpsData.status === 'ON_BATTERY' && currentUpsData.batteryCapacity < sysConfig.phoenixProtocol.shutdownThreshold) {
-        initiatePhoenixProtocol(activeUpsId);
+    // START OUTAGE TIMER
+    if (isOnBattery && !outageStartTime) {
+        setOutageStartTime(Date.now());
+        triggeredDevicesRef.current.clear(); // Reset on new outage
+        addEvent(`POWER LOSS DETECTED. UPS on Battery. Load Shedding Rules Active.`, 'WARNING', 'SYSTEM');
+    } 
+    // RESET ON RESTORE
+    else if (!isOnBattery && outageStartTime) {
+        setOutageStartTime(null);
+        triggeredDevicesRef.current.clear();
+        setActiveCountdowns({});
+        setShutdownTriggered(false);
+        addEvent(`POWER RESTORED. Resuming Normal Operations.`, 'SUCCESS', 'SYSTEM');
     }
-  }, [currentUpsData, sysConfig, currentUser, shutdownTriggered, activeUpsId]);
 
-  const initiatePhoenixProtocol = async (sourceUpsId: string) => {
-      setShutdownTriggered(true);
-      const upsName = settings.upsRegistry.find(u => u.id === sourceUpsId)?.name || sourceUpsId;
-      addEvent(`PHOENIX PROTOCOL INITIATED by ${upsName} (Critical Battery).`, 'CRITICAL', 'PHOENIX');
-      
-      // Initialize Countdowns based on config
-      const sequence = sysConfig.phoenixProtocol.shutdownSequence;
-      const initialCountdowns: SequenceCountdownMap = {};
-      
-      sequence.forEach(step => {
-          initialCountdowns[step.deviceId] = step.delaySeconds;
+    // EVALUATE RULES (Run loop if Outage Active)
+    if (isOnBattery) {
+        const interval = setInterval(() => evaluateShutdownRules(), 1000);
+        return () => clearInterval(interval);
+    }
+
+  }, [currentUpsData.status, outageStartTime, currentUser, currentUpsData.batteryCapacity]); 
+
+  const evaluateShutdownRules = () => {
+      if (!outageStartTime) return;
+
+      const now = Date.now();
+      const secondsSinceOutage = Math.floor((now - outageStartTime) / 1000);
+      const currentCapacity = currentUpsData.batteryCapacity;
+
+      // 1. Check Global Failsafe
+      if (currentCapacity < sysConfig.phoenixProtocol.shutdownThreshold && !shutdownTriggered) {
+          setShutdownTriggered(true);
+          addEvent('GLOBAL FAILSAFE THRESHOLD REACHED. Initiating Emergency Protocols.', 'CRITICAL', 'PHOENIX');
+      }
+
+      // 2. Iterate Configured Rules
+      const rules = sysConfig.phoenixProtocol.shutdownSequence;
+      const nextActiveCountdowns: SequenceCountdownMap = {};
+
+      rules.forEach(rule => {
+          // Skip if already triggered (using REF for immediate consistency)
+          if (triggeredDevicesRef.current.has(rule.deviceId)) return;
+
+          let isMet = false;
+          let value = 0;
+
+          if (rule.type === 'TIMER') {
+              // Timer Logic: Trigger if outage duration > threshold
+              isMet = secondsSinceOutage >= rule.threshold;
+              value = Math.max(0, rule.threshold - secondsSinceOutage); // Seconds remaining
+          } else {
+              // Battery Logic: Trigger if capacity <= threshold
+              isMet = currentCapacity <= rule.threshold;
+              value = currentCapacity; // Current Capacity
+          }
+
+          // Trigger Action
+          if (isMet) {
+              // Mark as triggered IMMEDIATELY in Ref to prevent duplicate firing in next tick
+              triggeredDevicesRef.current.add(rule.deviceId);
+              executeDeviceShutdown(rule.deviceId, rule.type);
+          } else {
+              // Add to Active Monitoring Map for Dashboard display
+              nextActiveCountdowns[rule.deviceId] = {
+                  rule: rule,
+                  currentValue: value, // Either seconds left or current %
+                  isMet: false
+              };
+          }
       });
-      
-      setActiveCountdowns(initialCountdowns);
 
-      // Start the Ticker
-      if (protocolTimerRef.current) clearInterval(protocolTimerRef.current);
-      
-      protocolTimerRef.current = setInterval(async () => {
-          setActiveCountdowns(current => {
-              const next = { ...current };
-              let hasActive = false;
-
-              Object.keys(next).forEach(deviceId => {
-                  if (next[deviceId] > 0) {
-                      next[deviceId] -= 1;
-                      hasActive = true;
-
-                      // TRIGGER EVENT ON ZERO
-                      if (next[deviceId] === 0) {
-                          executeDeviceShutdown(deviceId);
-                      }
-                  }
-              });
-
-              if (!hasActive) {
-                   if (protocolTimerRef.current) clearInterval(protocolTimerRef.current);
-                   addEvent("PHOENIX PROTOCOL: All timers expired.", 'WARNING', 'PHOENIX');
-              }
-              return next;
-          });
-      }, 1000);
+      setActiveCountdowns(nextActiveCountdowns);
   };
 
-  const executeDeviceShutdown = async (deviceId: string) => {
-      // Find device config
+  const executeDeviceShutdown = async (deviceId: string, triggerReason: string) => {
       let device: any = sysConfig.virtualRack.unassignedDevices.find(d => d.id === deviceId);
       if (!device) {
-          const allOutletDevices = Object.values(sysConfig.virtualRack.outlets).flat();
+          const allOutletDevices = (Object.values(sysConfig.virtualRack.outlets) as Device[][]).flat();
           device = allOutletDevices.find(d => d.id === deviceId);
       }
       
-      // Handle Outlet Groups
+      // Handle Hard Cut Entities
       if (!device && deviceId.startsWith('OUTLET_GRP_')) {
           const outletId = parseInt(deviceId.replace('OUTLET_GRP_', ''));
-          // Find Active UPS Config to get IP for hard cut
           const activeUpsConfig = settings.upsRegistry.find(u => u.id === activeUpsId);
           device = {
              id: deviceId,
@@ -255,15 +302,21 @@ const App: React.FC = () => {
       }
 
       if (device) {
+          const reasonText = triggerReason === 'TIMER' ? 'Timer Expired' : 'Battery Threshold Met';
           const isHardCut = device.shutdownMethod === 'HARD_CUT';
-          addEvent(`EXECUTING: ${isHardCut ? 'HARD CUT' : 'SHUTDOWN'} -> ${device.name}`, 'CRITICAL', 'PHOENIX');
           
+          addEvent(`TRIGGER (${reasonText}): ${isHardCut ? 'HARD CUT' : 'SHUTDOWN'} -> ${device.name}`, 'CRITICAL', 'PHOENIX');
+          
+          // Execute
           const success = await DeviceControlService.shutdownDevice(device);
+          
           if (success) {
               addEvent(`${device.name} command SUCCESS.`, 'SUCCESS', 'PHOENIX');
               setDeviceStatuses(prev => ({ ...prev, [deviceId]: 'OFFLINE' }));
+              notify({ type: 'SUCCESS', message: `Load Shed: ${device.name}` });
           } else {
               addEvent(`${device.name} command FAILED.`, 'CRITICAL', 'PHOENIX');
+              notify({ type: 'ERROR', message: `Shutdown Failed: ${device.name}` });
           }
       }
   };
@@ -343,20 +396,17 @@ const App: React.FC = () => {
   // --- MULTI-UPS SNMP MANAGEMENT ---
   useEffect(() => {
     if (isSimulating || !currentUser) {
-        // Clear all managers if simulating or logged out
         snmpManagersRef.current.forEach(m => m.stopPolling());
         snmpManagersRef.current.clear();
         return;
     }
 
-    const activeRegistryIds = new Set(settings.upsRegistry.map(u => u.id));
+    const activeRegistryIds = new Set(settings.upsRegistry.map((u: any) => u.id));
     
-    // 1. Remove Managers for deleted UPSs
     for (const [id, manager] of snmpManagersRef.current.entries()) {
         if (!activeRegistryIds.has(id)) {
             manager.stopPolling();
             snmpManagersRef.current.delete(id);
-            // Also clean up data
             setAllUpsData(prev => {
                 const copy = { ...prev };
                 delete copy[id];
@@ -365,20 +415,20 @@ const App: React.FC = () => {
         }
     }
 
-    // 2. Add/Update Managers for active UPSs
     settings.upsRegistry.forEach(upsConf => {
         let manager = snmpManagersRef.current.get(upsConf.id);
         
-        // Ideally we check if config changed to recreate, but for simplicity we recreate if missing
         if (!manager) {
             manager = new SnmpManager(upsConf.targetIp, upsConf.community, upsConf.pollingInterval);
             
             manager.subscribe((newData) => {
                 setAllUpsData(prev => {
                     const existing = prev[upsConf.id] || INITIAL_DATA;
-                    // Detect status change for logging
                     if (newData.status && newData.status !== existing.status) {
                         addEvent(`[${upsConf.name}] Status changed to ${newData.status}`, 'WARNING', 'SYSTEM');
+                        if (newData.status !== 'ONLINE') {
+                            notify({ type: 'WARNING', title: 'STATUS CHANGE', message: `${upsConf.name} is ${newData.status}`});
+                        }
                     }
                     return {
                         ...prev,
@@ -391,10 +441,6 @@ const App: React.FC = () => {
             snmpManagersRef.current.set(upsConf.id, manager);
         }
     });
-
-    return () => {
-        // Cleanup on unmount handled by logic above or ref persistence
-    };
   }, [settings.upsRegistry, isSimulating, currentUser]);
 
   // Auto-detect layout
@@ -409,30 +455,17 @@ const App: React.FC = () => {
              };
              handleUpdateConfig(newConfig); 
              addEvent(`Auto-detected UPS Model: ${model}. Switched layout to ${detected}.`, 'SUCCESS', 'SYSTEM');
+             notify({ type: 'INFO', message: `Rack Layout adapted for ${model}` });
         }
     }
   }, [currentUpsData.modelName]); 
-
-  const addEvent = (message: string, severity: LogEntry['severity'] = 'INFO', source: LogEntry['source'] = 'SYSTEM') => {
-      const timestamp = new Date().toLocaleTimeString();
-      const newLog: LogEntry = {
-          id: `log-${Date.now()}-${Math.random()}`,
-          timestamp,
-          message,
-          severity,
-          source
-      };
-      setEventLogs(prev => [newLog, ...prev]);
-      setProtocolLog(prev => [`[${timestamp}] ${message}`, ...prev].slice(0, 10));
-      if (!isLogOpen) setHasNewLogs(true);
-  };
 
   const toggleLog = () => {
       setIsLogOpen(!isLogOpen);
       if (!isLogOpen) setHasNewLogs(false);
   };
 
-  // Simulation Loop - Applies to ACTIVE UPS only for demo purposes
+  // Simulation Loop
   useEffect(() => {
     if (!isSimulating || !currentUser) return;
     const interval = setInterval(() => {
@@ -465,6 +498,7 @@ const App: React.FC = () => {
         setCurrentUser(updatedUser);
         setActiveTab(TabId.COMMAND_DECK);
         addEvent(`User ${username} logged in.`, 'INFO', 'USER');
+        notify({ type: 'SUCCESS', message: 'Uplink Established. Welcome back, Operator.' });
         return true;
     }
     
@@ -475,6 +509,7 @@ const App: React.FC = () => {
             setLockoutEndTime(Date.now() + cooldownMs);
             setFailedLoginAttempts(0); 
             addEvent(`System Locked: Too many failed login attempts for ${username}. Cooldown active.`, 'CRITICAL', 'SYSTEM');
+            notify({ type: 'ERROR', message: 'Security Lockout Active. Access Suspended.' });
         } else {
             setFailedLoginAttempts(newCount);
         }
@@ -488,7 +523,6 @@ const App: React.FC = () => {
   };
 
   const handleResetEnergy = () => {
-      // Reset only for active UPS in memory (real logic would need per-ups persistence clearing)
       setAllUpsData(prev => ({
           ...prev,
           [activeUpsId]: { ...prev[activeUpsId], energyUsageKWh: 0 }
@@ -496,6 +530,7 @@ const App: React.FC = () => {
       setEnergyHistory([]);
       StorageService.saveEnergyHistory([]);
       addEvent('Lifetime Energy Counter Reset by User.', 'INFO', 'USER');
+      notify({ type: 'SUCCESS', message: 'Energy Metrics Reset.' });
   };
 
   const requestSecureAction = (actionCallback: () => void, description: string = "Execute critical system change") => {
@@ -542,7 +577,7 @@ const App: React.FC = () => {
   const performNavigation = (target: TabId | 'LOGOUT') => {
       if (activeTab === TabId.SHUTDOWN_SEQUENCER) setIsSequencerDirty(false);
       if (activeTab === TabId.VIRTUAL_RACK) setIsRackDirty(false);
-      if (target === 'LOGOUT') { handleLogout(); } else { setActiveTab(target); }
+      if (target === 'LOGOUT') { handleLogout(); } else { setActiveTab(target); setHelpContext(undefined); }
   };
 
   const confirmDiscard = () => {
@@ -559,7 +594,6 @@ const App: React.FC = () => {
       setPendingAction(null);
   };
 
-  // Helper to update Active UPS data specifically (for simulation/diagnostics)
   const setSingleUpsData = (updater: React.SetStateAction<UPSData>) => {
       setAllUpsData(prev => {
           const current = prev[activeUpsId] || INITIAL_DATA;
@@ -569,9 +603,20 @@ const App: React.FC = () => {
   };
 
   const renderContent = () => {
+    // Generate device map for names lookup in dashboard
+    const deviceMap = sysConfig.virtualRack.unassignedDevices.concat(...(Object.values(sysConfig.virtualRack.outlets) as Device[][]).flat());
+
     switch (activeTab) {
       case TabId.COMMAND_DECK: 
-        return <CommandDeck data={currentUpsData} enableAudibleAlarms={settings.system.enableAudibleAlarms} />;
+        return (
+            <CommandDeck 
+                data={currentUpsData} 
+                enableAudibleAlarms={settings.system.enableAudibleAlarms} 
+                activeCountdowns={activeCountdowns}
+                deviceList={deviceMap}
+                onHelp={handleNavigateToHelp}
+            />
+        );
       case TabId.VIRTUAL_RACK: 
         return (
             <VirtualRack 
@@ -579,7 +624,8 @@ const App: React.FC = () => {
                 onUpdateConfig={handleUpdateConfig} 
                 onRequestSecureAction={requestSecureAction} 
                 onDirtyChange={setIsRackDirty}
-                deviceStatuses={deviceStatuses} // Pass real-time status
+                deviceStatuses={deviceStatuses} 
+                onHelp={handleNavigateToHelp}
             />
         );
       case TabId.SHUTDOWN_SEQUENCER:
@@ -589,19 +635,35 @@ const App: React.FC = () => {
                 onUpdateConfig={handleUpdateConfig} 
                 onDirtyChange={setIsSequencerDirty}
                 deviceStatuses={deviceStatuses}
-                activeCountdowns={activeCountdowns} // Pass real-time countdowns
+                activeCountdowns={activeCountdowns}
+                onHelp={handleNavigateToHelp}
             />
         );
       case TabId.DIAGNOSTICS: 
-        return <DiagnosticsBay data={currentUpsData} config={sysConfig} setStatus={(status) => { setSingleUpsData(prev => ({ ...prev, status })); addEvent(`System status changed to ${status}`, status === 'ONLINE' ? 'SUCCESS' : 'WARNING'); }} />;
+        return <DiagnosticsBay data={currentUpsData} config={sysConfig} setStatus={(status) => { setSingleUpsData(prev => ({ ...prev, status })); addEvent(`System status changed to ${status}`, status === 'ONLINE' ? 'SUCCESS' : 'WARNING'); }} onHelp={handleNavigateToHelp} />;
       case TabId.ENERGY_MONITOR: 
         return <EnergyMonitor data={currentUpsData} history={energyHistory} />;
       case TabId.SIMULATION:
-          return <SimulationLab upsData={currentUpsData} setUpsData={setSingleUpsData} setIsSimulating={setIsSimulating} config={sysConfig} onUpdateConfig={handleUpdateConfig} />;
+          return <SimulationLab upsData={currentUpsData} setUpsData={setSingleUpsData} setIsSimulating={setIsSimulating} config={sysConfig} onUpdateConfig={handleUpdateConfig} onHelp={handleNavigateToHelp} />;
       case TabId.EVENTS_LOGS:
         return <EventsLog logs={eventLogs} onClearLogs={() => setEventLogs([])} />;
       case TabId.SETTINGS: 
-        return <SettingsPanel settings={settings} onUpdateSettings={handleUpdateSettings} config={sysConfig} onUpdateConfig={handleUpdateConfig} upsData={currentUpsData} currentUser={currentUser} onRequestSecureAction={requestSecureAction} onResetEnergy={handleResetEnergy} />;
+        return (
+            <SettingsPanel 
+                settings={settings} 
+                onUpdateSettings={handleUpdateSettings} 
+                config={sysConfig} 
+                onUpdateConfig={handleUpdateConfig} 
+                upsData={currentUpsData} 
+                currentUser={currentUser} 
+                onRequestSecureAction={requestSecureAction} 
+                onResetEnergy={handleResetEnergy} 
+                onLogEvent={addEvent}
+                onHelp={handleNavigateToHelp}
+            />
+        );
+      case TabId.HELP:
+        return <HelpCenter context={helpContext} />;
       default: return <CommandDeck data={currentUpsData} enableAudibleAlarms={settings.system.enableAudibleAlarms} />;
     }
   };
@@ -629,6 +691,8 @@ const App: React.FC = () => {
         .animate-fade-in-up { animation: fade-in-up 0.2s ease-out forwards; }
       `}</style>
       <div className={`h-screen w-screen bg-charcoal text-white flex overflow-hidden font-mono select-none transition-all duration-500 ${getThemeClass()}`}>
+        {/* Navigation & Layout logic from previous App.tsx kept for brevity, assuming NavButton and structure exist */}
+        {/* We reuse the structure from the input file but ensure it calls the hooks from context now */}
         
         {/* Desktop Sidebar Navigation */}
         <nav className="hidden md:flex w-20 hover:w-64 bg-black border-r border-gray-800 flex-col items-start py-6 z-40 transition-all duration-300 ease-in-out group shadow-2xl">
@@ -644,7 +708,6 @@ const App: React.FC = () => {
               </div>
           </div>
           
-          {/* UPS Selector */}
           <div className="w-full px-2 mb-6">
               <div className="text-[9px] text-gray-500 mb-1 pl-2 font-bold tracking-wider opacity-0 group-hover:opacity-100 transition-opacity">ACTIVE UPS</div>
               <div className="bg-gray-900 border border-gray-700 rounded p-1">
@@ -680,6 +743,7 @@ const App: React.FC = () => {
           <div className="flex-1" />
           <div className="flex flex-col gap-2 w-full pb-4">
               <NavButton label="SETTINGS" active={activeTab === TabId.SETTINGS} onClick={() => handleNavigation(TabId.SETTINGS)} icon={<IconSettings />} color="text-gray-400" borderColor="border-gray-600" />
+              <NavButton label="HELP" active={activeTab === TabId.HELP} onClick={() => handleNavigation(TabId.HELP)} icon={<IconHelp />} color="text-gray-400" borderColor="border-gray-600" />
               <NavButton label="LOGOUT" active={false} onClick={() => handleNavigation('LOGOUT')} icon={<IconLogout />} color="text-red-500" borderColor="border-red-900" />
           </div>
         </nav>
@@ -708,7 +772,7 @@ const App: React.FC = () => {
           {/* Protocol Notification Overlay */}
           {shutdownTriggered && (
               <div className="bg-red-900/90 text-white text-xs font-mono p-2 flex justify-between items-center border-b border-red-500 animate-pulse">
-                  <span>⚠ PHOENIX PROTOCOL ACTIVE: SYSTEM SHUTDOWN IMMINENT</span>
+                  <span>⚠ PHOENIX PROTOCOL ACTIVE: GLOBAL FAILSAFE SHUTDOWN IMMINENT</span>
                   <button onClick={() => setShutdownTriggered(false)} className="border border-white px-2 hover:bg-white hover:text-red-900">DISMISS</button>
               </div>
           )}
@@ -749,7 +813,7 @@ const App: React.FC = () => {
           </div>
         </main>
 
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-black/95 backdrop-blur border-t border-gray-800 flex justify-around items-center z-50 px-2">
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-black/95 backdrop-blur border-t border-gray-800 flex justify-start items-center z-50 px-4 overflow-x-auto gap-4 custom-scrollbar">
            <NavButton mobile label="DASH" active={activeTab === TabId.COMMAND_DECK} onClick={() => handleNavigation(TabId.COMMAND_DECK)} icon={<IconDeck />} />
            <NavButton mobile label="RACK" active={activeTab === TabId.VIRTUAL_RACK} onClick={() => handleNavigation(TabId.VIRTUAL_RACK)} icon={<IconRack />} />
            <NavButton mobile label="SEQ" active={activeTab === TabId.SHUTDOWN_SEQUENCER} onClick={() => handleNavigation(TabId.SHUTDOWN_SEQUENCER)} icon={<IconSequence />} />
@@ -758,6 +822,7 @@ const App: React.FC = () => {
            <NavButton mobile label="SIM" active={activeTab === TabId.SIMULATION} onClick={() => handleNavigation(TabId.SIMULATION)} icon={<IconLab />} />
            <NavButton mobile label="LOGS" active={activeTab === TabId.EVENTS_LOGS} onClick={() => handleNavigation(TabId.EVENTS_LOGS)} icon={<IconLogs />} />
            <NavButton mobile label="SET" active={activeTab === TabId.SETTINGS} onClick={() => handleNavigation(TabId.SETTINGS)} icon={<IconSettings />} />
+           <NavButton mobile label="HELP" active={activeTab === TabId.HELP} onClick={() => handleNavigation(TabId.HELP)} icon={<IconHelp />} />
         </nav>
       </div>
 
@@ -810,7 +875,13 @@ const App: React.FC = () => {
   );
 };
 
-// Detect Layout Helper
+const App: React.FC = () => (
+    <NotificationProvider>
+        <MainAppContent />
+    </NotificationProvider>
+);
+
+// Helper for Layout Detection (Same as before)
 const detectLayoutFromModel = (model: string): LayoutType | null => {
     if (!model) return null;
     const m = model.toUpperCase();
@@ -830,16 +901,13 @@ const detectLayoutFromModel = (model: string): LayoutType | null => {
          if (m.includes('1000') || m.includes('1500')) return 'TOWER_8';
          if (m.includes('750')) return 'TOWER_6';
     }
-    if (m.includes('3000')) return 'RACK_2U_8';
-    if (m.includes('1500')) return 'TOWER_8';
-    if (m.includes('750')) return 'TOWER_6';
     return null;
 };
 
 const NavButton: React.FC<{ label: string, active: boolean, onClick: () => void, icon: React.ReactNode, color?: string, borderColor?: string, mobile?: boolean }> = ({ label, active, onClick, icon, color = 'text-neon-cyan', borderColor = 'border-neon-cyan', mobile = false }) => {
     if (mobile) {
         return (
-            <button onClick={onClick} className={`w-10 h-10 rounded flex items-center justify-center transition-all duration-300 ${active ? `bg-gray-900 border ${borderColor} ${color} shadow-[0_0_10px_rgba(0,240,255,0.2)]` : 'bg-transparent border border-transparent text-gray-600 hover:text-gray-300 hover:border-gray-700'} ${color !== 'text-neon-cyan' && !active ? color : ''}`}>
+            <button onClick={onClick} className={`w-10 h-10 rounded flex items-center justify-center transition-all duration-300 shrink-0 mx-1 ${active ? `bg-gray-900 border ${borderColor} ${color} shadow-[0_0_10px_rgba(0,240,255,0.2)]` : 'bg-transparent border border-transparent text-gray-600 hover:text-gray-300 hover:border-gray-700'} ${color !== 'text-neon-cyan' && !active ? color : ''}`}>
                 {React.cloneElement(icon as React.ReactElement<any>, { width: 18, height: 18 })}
             </button>
         );

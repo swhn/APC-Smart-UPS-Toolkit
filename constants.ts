@@ -12,6 +12,12 @@ export const COLORS = {
   gray: '#333333'
 };
 
+export const NETWORK_TIMEOUTS = {
+    PING: 2000,
+    SNMP: 3000,
+    SSH_HANDSHAKE: 5000
+};
+
 // Hardware Layout Definitions
 export const RACK_LAYOUTS: Record<LayoutType, LayoutDef> = {
     // --- TOWER MODELS ---
@@ -88,26 +94,25 @@ export const RACK_LAYOUTS: Record<LayoutType, LayoutDef> = {
 };
 
 // APC MIB OIDs
-// Note: Leading dots removed for net-snmp compatibility
 export const OID_MAP = {
   identModel: '1.3.6.1.4.1.318.1.1.1.1.1.1.0',
-  // upsBasicOutputStatus: 2=Online, 3=OnBattery, 4=SmartBoost, 5=Sleep, ...
+  identSerialNumber: '1.3.6.1.4.1.318.1.1.1.1.2.3.0', // NEW: Serial Number
   upsBasicOutputStatus: '1.3.6.1.4.1.318.1.1.1.4.1.1.0', 
-  batteryStatus: '1.3.6.1.4.1.318.1.1.1.2.1.1.0', // 2 = Battery Normal, 3 = Battery Low
+  batteryStatus: '1.3.6.1.4.1.318.1.1.1.2.1.1.0', 
   secondsOnBattery: '1.3.6.1.4.1.318.1.1.1.2.1.2.0',
-  batteryCapacity: '1.3.6.1.4.1.318.1.1.1.2.2.1.0', // %
-  batteryTemperature: '1.3.6.1.4.1.318.1.1.1.2.2.2.0', // Celsius
-  runtimeRemaining: '1.3.6.1.4.1.318.1.1.1.2.2.3.0', // Timeticks (1/100s)
+  batteryCapacity: '1.3.6.1.4.1.318.1.1.1.2.2.1.0', 
+  batteryTemperature: '1.3.6.1.4.1.318.1.1.1.2.2.2.0', 
+  runtimeRemaining: '1.3.6.1.4.1.318.1.1.1.2.2.3.0', 
   inputVoltage: '1.3.6.1.4.1.318.1.1.1.3.2.1.0',
-  inputFrequency: '1.3.6.1.4.1.318.1.1.1.3.2.4.0', // Hz
+  inputFrequency: '1.3.6.1.4.1.318.1.1.1.3.2.4.0', 
   outputVoltage: '1.3.6.1.4.1.318.1.1.1.4.2.1.0',
-  outputLoad: '1.3.6.1.4.1.318.1.1.1.4.2.3.0', // %
+  outputLoad: '1.3.6.1.4.1.318.1.1.1.4.2.3.0', 
   outputAmps: '1.3.6.1.4.1.318.1.1.1.4.2.4.0',
-  firmwareVersion: '1.3.6.1.4.1.318.1.1.1.1.2.1.0', // String
-  batteryReplaceDate: '1.3.6.1.4.1.318.1.1.1.2.1.3.0', // String
-  batteryVoltage: '1.3.6.1.4.1.318.1.1.1.2.2.8.0', // Tenths of Volts
-  batteryReplaceIndicator: '1.3.6.1.4.1.318.1.1.1.2.2.4.0', // 1=No, 2=Yes
-  externalBatteryCount: '1.3.6.1.4.1.318.1.1.1.2.2.5.0' // Number of external packs
+  firmwareVersion: '1.3.6.1.4.1.318.1.1.1.1.2.1.0', 
+  batteryReplaceDate: '1.3.6.1.4.1.318.1.1.1.2.1.3.0', 
+  batteryVoltage: '1.3.6.1.4.1.318.1.1.1.2.2.8.0', 
+  batteryReplaceIndicator: '1.3.6.1.4.1.318.1.1.1.2.2.4.0', 
+  externalBatteryCount: '1.3.6.1.4.1.318.1.1.1.2.2.5.0'
 };
 
 // Mock data for initial render
@@ -125,6 +130,7 @@ export const INITIAL_DATA: any = {
   apparentPowerVA: 1020,
   energyUsageKWh: 14502.5,
   modelName: 'Loading...',
+  serialNumber: '---', // Initial state
   firmwareVersion: 'Loading...',
   batteryReplaceDate: 'Loading...',
   batteryVoltage: 27.4,
@@ -148,13 +154,13 @@ export const INITIAL_SYS_CONFIG: SystemConfiguration = {
   },
   phoenixProtocol: { 
       timeline: [], 
-      shutdownSequence: [], // Default to empty so devices are OFF by default
-      shutdownThreshold: 20 
+      shutdownSequence: [], 
+      shutdownThreshold: 10 // Global Hard Cut / Failsafe
   },
   breakerLimitAmps: 15,
   batteryConfigOverride: {
       enabled: false,
-      nominalVoltage: 24, // Defaults to a small unit
+      nominalVoltage: 24, 
       manualExternalPacks: 0
   }
 };

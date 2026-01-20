@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { UPSData, SystemConfiguration, Device } from '../types';
 
@@ -13,7 +12,7 @@ interface Props {
 const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, config, onUpdateConfig }) => {
   const [thermalRunawayActive, setThermalRunawayActive] = useState(false);
   const [brownoutActive, setBrownoutActive] = useState(false);
-  const scenarioIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const scenarioIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Clean up scenarios on unmount
   useEffect(() => {

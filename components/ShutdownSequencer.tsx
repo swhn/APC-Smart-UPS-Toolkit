@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { SystemConfiguration, DeviceStatusMap, SequenceCountdownMap } from '../types';
+import { SystemConfiguration, DeviceStatusMap, SequenceCountdownMap, Device } from '../types';
 import { RACK_LAYOUTS } from '../constants';
 
 interface Props {
@@ -9,9 +9,16 @@ interface Props {
   onDirtyChange?: (isDirty: boolean) => void;
   deviceStatuses: DeviceStatusMap;
   activeCountdowns: SequenceCountdownMap;
+  onHelp?: (context: string) => void;
 }
 
-const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyChange, deviceStatuses, activeCountdowns }) => {
+const HelpButton: React.FC<{ onClick: () => void, color?: string }> = ({ onClick, color = 'text-gray-500' }) => (
+    <button onClick={onClick} className={`w-5 h-5 rounded-full border border-current ${color} flex items-center justify-center text-[10px] hover:text-neon-cyan hover:border-neon-cyan transition-colors z-10`} title="Help">
+        ?
+    </button>
+);
+
+const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyChange, deviceStatuses, activeCountdowns, onHelp }) => {
   // --- Draft State ---
   const [draftSequence, setDraftSequence] = useState(config.phoenixProtocol.shutdownSequence);
   const [draftThreshold, setDraftThreshold] = useState(config.phoenixProtocol.shutdownThreshold);
@@ -42,8 +49,8 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
       setDraftSequence(prev => {
           if (enabled) {
               if (prev.find(s => s.deviceId === entityId)) return prev;
-              const defaultDelay = entityId.startsWith('OUTLET_') || entityId.startsWith('BANK_') ? 120 : 60;
-              return [...prev, { deviceId: entityId, delaySeconds: defaultDelay }];
+              const defaultThreshold = entityId.startsWith('OUTLET_') || entityId.startsWith('BANK_') ? 120 : 60;
+              return [...prev, { deviceId: entityId, type: 'TIMER', threshold: defaultThreshold }];
           } else {
               return prev.filter(s => s.deviceId !== entityId);
           }
@@ -51,9 +58,9 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
       setHasChanges(true);
   };
 
-  const updateDelayLocal = (entityId: string, delay: number) => {
+  const updateRuleLocal = (entityId: string, type: 'TIMER' | 'BATTERY', threshold: number) => {
       setDraftSequence(prev => prev.map(item => 
-          item.deviceId === entityId ? { ...item, delaySeconds: delay } : item
+          item.deviceId === entityId ? { ...item, type, threshold } : item
       ));
       setHasChanges(true);
   };
@@ -71,13 +78,7 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
 
   // --- Visualized Sequence Logic ---
   
-  const getCommittedSequenceInfo = (id: string) => config.phoenixProtocol.shutdownSequence.find(s => s.deviceId === id);
-  const getDraftSequenceInfo = (id: string) => draftSequence.find(s => s.deviceId === id);
-
-  const getSequenceRank = (id: string) => {
-      const sorted = config.phoenixProtocol.shutdownSequence.sort((a,b) => a.delaySeconds - b.delaySeconds);
-      return sorted.findIndex(s => s.deviceId === id) + 1;
-  };
+  const getDraftRule = (id: string) => draftSequence.find(s => s.deviceId === id);
 
   // --- Topology Awareness & Entity Generation ---
   
@@ -91,7 +92,7 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
   // 2. Get Soft-Shutdown Devices
   // NOTE: We only allow sequencing of devices that are physically ASSIGNED to the rack.
   // Unassigned (Staging) devices are filtered out to ensure topology consistency.
-  const assignedDevices = Object.values(config.virtualRack.outlets).flat().map(d => ({
+  const assignedDevices = (Object.values(config.virtualRack.outlets) as Device[][]).flat().map(d => ({
       ...d,
       isHardCut: false
   }));
@@ -101,7 +102,6 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
 
   if (isGroupSwitched) {
       // -- GROUP CONTROL LOGIC --
-      // We aggregate devices based on the layout groups (e.g. [4, 4] means outlets 1-4 are Bank 1)
       let currentOutletCursor = 1;
       
       currentLayout.groups.forEach((groupSize, groupIndex) => {
@@ -117,14 +117,12 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
               }
           }
 
-          // We create a control entity for every bank, regardless of occupancy, 
-          // so the user knows they CAN control it.
           hardCutEntities.push({
-              id: `OUTLET_GRP_${bankId}`, // Using consistent ID schema for logic compatibility
+              id: `OUTLET_GRP_${bankId}`, 
               name: `SWITCH BANK #${bankId}`,
               type: 'BANK',
               shutdownMethod: 'HARD_CUT',
-              assignedOutlet: start, // Used for sorting
+              assignedOutlet: start, 
               isHardCut: true,
               subDevices: devicesInBank,
               description: `Controls Outlets ${start}-${end}`
@@ -135,10 +133,6 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
 
   } else {
       // -- INDIVIDUAL CONTROL LOGIC --
-      // Create an entity for every outlet that has a device, OR just all outlets?
-      // Usually better to show all outlets so you can cut power even if "empty" in software but has dumb load.
-      // For this UI, we'll map existing configured outlets + any empty ones up to max count.
-      
       for(let i=1; i<=currentLayout.outlets; i++) {
           const devices = config.virtualRack.outlets[i] || [];
           hardCutEntities.push({
@@ -162,17 +156,22 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
 
   const sequencedEntities = uniqueEntities.sort((a, b) => {
       // Sorting Logic for Display:
-      // 1. Enabled items first (based on draft)
-      const draftA = getDraftSequenceInfo(a.id);
-      const draftB = getDraftSequenceInfo(b.id);
+      const draftA = getDraftRule(a.id);
+      const draftB = getDraftRule(b.id);
       
       if (draftA && !draftB) return -1;
       if (!draftA && draftB) return 1;
       
-      // 2. By Delay Time (if enabled)
-      if (draftA && draftB) return draftA.delaySeconds - draftB.delaySeconds;
+      // Secondary: Group by Type then Threshold
+      if (draftA && draftB) {
+          if (draftA.type !== draftB.type) return draftA.type === 'TIMER' ? -1 : 1;
+          // If timer, ascending (30s first). If battery, descending (80% first)
+          return draftA.type === 'TIMER' 
+            ? draftA.threshold - draftB.threshold 
+            : draftB.threshold - draftA.threshold;
+      }
       
-      // 3. Fallback: Hard Cuts at bottom
+      // Fallback: Hard Cuts at bottom
       if (a.isHardCut && !b.isHardCut) return 1;
       if (!a.isHardCut && b.isHardCut) return -1;
       
@@ -190,11 +189,10 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
             <div className="border-b border-gray-800 pb-4">
                 <div className="flex justify-between items-start">
                     <div>
-                        <h2 className="text-xl font-mono text-neon-cyan">PHOENIX PROTOCOL CONFIGURATION</h2>
-                        <p className="text-xs text-gray-500 font-mono mt-1">Configure automated shutdown sequence and battery thresholds.</p>
+                        <h2 className="text-xl font-mono text-neon-cyan">DYNAMIC LOAD SHEDDING</h2>
+                        <p className="text-xs text-gray-500 font-mono mt-1">Configure per-device triggers to extend runtime or perform graceful shutdowns.</p>
                     </div>
                     
-                    {/* Topology Badge */}
                     <div className="flex flex-col items-end">
                         <div className="text-[10px] text-gray-500 font-mono tracking-wider mb-1">HARDWARE TOPOLOGY</div>
                         <span className={`px-2 py-1 rounded text-[10px] font-mono border ${isGroupSwitched ? 'border-orange-500 text-orange-500 bg-orange-900/10' : 'border-green-500 text-green-500 bg-green-900/10'}`}>
@@ -204,21 +202,22 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                 </div>
             </div>
 
-            {/* 1. Trigger Threshold Card (Top) */}
+            {/* 1. Global Failsafe Card */}
             <div className={`bg-gray-900/50 border p-6 rounded relative overflow-hidden transition-colors duration-300 ${draftThreshold !== config.phoenixProtocol.shutdownThreshold ? 'border-neon-orange bg-neon-orange/5' : 'border-gray-800'}`}>
                 {/* Background Decor */}
-                <div className="absolute top-0 right-0 p-4 opacity-10 text-9xl text-neon-orange font-bold font-mono pointer-events-none -mt-4 -mr-4 select-none">%</div>
+                <div className="absolute top-0 right-0 p-4 opacity-10 text-9xl text-neon-orange font-bold font-mono pointer-events-none -mt-4 -mr-4 select-none">Ω</div>
                 
                 <div className="relative z-10 flex flex-col md:flex-row gap-8 items-start md:items-center">
                     <div className="flex-1">
-                        <h3 className="text-neon-orange font-mono text-sm mb-2 flex items-center gap-2">
-                            TRIGGER THRESHOLD
+                        <div className="flex items-center gap-2 mb-2">
+                            <h3 className="text-neon-orange font-mono text-sm">GLOBAL FAILSAFE THRESHOLD</h3>
+                            {onHelp && <HelpButton onClick={() => onHelp('sequencer_failsafe')} color="text-neon-orange border-neon-orange" />}
                             {draftThreshold !== config.phoenixProtocol.shutdownThreshold && (
-                                <span className="text-[10px] bg-neon-orange text-black px-2 py-0.5 rounded font-bold animate-pulse">UNSAVED CHANGE</span>
+                                <span className="text-[10px] bg-neon-orange text-black px-2 py-0.5 rounded font-bold animate-pulse">UNSAVED</span>
                             )}
-                        </h3>
+                        </div>
                         <p className="text-xs text-gray-400 max-w-md">
-                            The system will automatically initiate the shutdown sequence when the UPS battery capacity drops below this percentage.
+                            If the battery drops below this critical level, the system assumes a catastrophic failure state and initiates emergency shutdown procedures for ALL remaining devices.
                         </p>
                     </div>
 
@@ -226,14 +225,14 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                         <div className="flex-1">
                             <input 
                                 type="range" 
-                                min="5" max="90" 
+                                min="10" max="90" 
                                 value={draftThreshold} 
                                 onChange={handleShutdownThresholdChange}
                                 className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-neon-orange"
                             />
                             <div className="flex justify-between text-[10px] text-gray-600 font-mono px-1 mt-2">
-                                <span>5% (CRITICAL)</span>
-                                <span>90% (EARLY)</span>
+                                <span>10% (DEEP DISCHARGE)</span>
+                                <span>90% (EARLY CUTOFF)</span>
                             </div>
                         </div>
                         <div className="w-24 text-right shrink-0">
@@ -244,18 +243,16 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                 </div>
             </div>
 
-            {/* 2. Sequence Editor (Middle) */}
+            {/* 2. Rule Engine */}
             <div className="bg-gray-900/50 border border-gray-800 p-6 rounded flex flex-col min-h-[400px]">
                 <div className="flex justify-between items-center mb-6">
                     <div>
-                        <h3 className="text-neon-cyan font-mono text-sm">SHUTDOWN SEQUENCE ORDER</h3>
-                        <span className="text-[10px] text-gray-500">{sequencedEntities.length} Active Entities Detected</span>
-                    </div>
-                    {config.virtualRack.unassignedDevices.length > 0 && (
-                        <div className="text-[10px] text-gray-600 font-mono italic">
-                            * {config.virtualRack.unassignedDevices.length} unassigned devices hidden
+                        <div className="flex items-center gap-2">
+                            <h3 className="text-neon-cyan font-mono text-sm">LOAD SHEDDING RULES</h3>
+                            {onHelp && <HelpButton onClick={() => onHelp('sequencer_rules')} />}
                         </div>
-                    )}
+                        <span className="text-[10px] text-gray-500">Active Rules take precedence over manual control during outages.</span>
+                    </div>
                 </div>
 
                 <div className="space-y-2">
@@ -268,104 +265,112 @@ const ShutdownSequencer: React.FC<Props> = ({ config, onUpdateConfig, onDirtyCha
                     {sequencedEntities.map((entity: any) => {
                         const isHardCut = entity.isHardCut;
                         
-                        // Visual order uses COMMITTED state for rank if unchanged, or recalculates if needed
-                        // Ideally we show the sequence order based on DRAFT values
-                        const draftSeq = getDraftSequenceInfo(entity.id);
-                        const isEnabled = !!draftSeq;
+                        const draftRule = getDraftRule(entity.id);
+                        const isEnabled = !!draftRule;
+                        const ruleType = draftRule?.type || 'TIMER'; // Default visual
+                        const ruleValue = draftRule?.threshold || 0;
 
-                        // Real-time status for active countdowns
-                        const currentCountdown = activeCountdowns[entity.id];
+                        // Real-time status for active trigger
+                        const triggerInfo = activeCountdowns[entity.id];
                         const isOffline = deviceStatuses[entity.id] === 'OFFLINE';
                         
                         return (
                             <div 
                                 key={entity.id} 
-                                className={`flex items-center gap-4 p-3 rounded border transition-all duration-300 relative overflow-hidden
+                                className={`flex flex-col md:flex-row md:items-center gap-4 p-3 rounded border transition-all duration-300 relative overflow-hidden
                                     ${isEnabled 
                                         ? 'bg-black border-neon-cyan/50 shadow-[0_0_10px_rgba(0,240,255,0.05)]' 
                                         : 'bg-black/20 border-gray-800 opacity-60 hover:opacity-100'}
-                                    ${currentCountdown !== undefined && currentCountdown > 0 ? 'border-red-500 bg-red-900/10' : ''}
+                                    ${triggerInfo?.isMet ? 'border-red-500 bg-red-900/10' : ''}
                                 `}
                             >
-                                {/* Active Countdown Overlay */}
-                                {currentCountdown !== undefined && currentCountdown > 0 && (
+                                {/* Active Trigger Overlay */}
+                                {triggerInfo?.isMet && (
                                     <div className="absolute inset-0 z-0 bg-red-900/10 animate-pulse pointer-events-none"></div>
                                 )}
 
-                                {/* Enable Toggle */}
-                                <div className="shrink-0 z-10">
+                                {/* ROW CONTENT */}
+                                <div className="flex items-center gap-4 w-full md:w-auto flex-1 min-w-0 z-10">
+                                    {/* Checkbox */}
                                     <input 
                                         type="checkbox"
                                         checked={isEnabled}
                                         onChange={(e) => toggleEntityLocal(entity.id, e.target.checked)}
-                                        className="w-5 h-5 accent-neon-cyan cursor-pointer rounded bg-gray-800 border-gray-600"
+                                        className="w-5 h-5 accent-neon-cyan cursor-pointer rounded bg-gray-800 border-gray-600 shrink-0"
                                     />
-                                </div>
 
-                                {/* Sequence Number (only if enabled) */}
-                                <div className={`w-8 font-mono text-lg font-bold text-center z-10 ${isEnabled ? 'text-white' : 'text-gray-700'}`}>
-                                    {isEnabled ? (draftSequence.sort((a,b) => a.delaySeconds - b.delaySeconds).findIndex(s => s.deviceId === entity.id) + 1) : '-'}
-                                </div>
-
-                                {/* Icon / Type Indicator */}
-                                <div className={`w-10 h-10 flex items-center justify-center rounded bg-gray-900 border z-10 ${isHardCut ? 'border-red-900 text-red-500' : 'border-blue-900 text-blue-500'}`}>
-                                    {isHardCut ? (
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
-                                    ) : (
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
-                                    )}
-                                </div>
-
-                                {/* Details */}
-                                <div className="flex-1 min-w-0 z-10">
-                                    <div className="flex items-center gap-2">
-                                        <div className="text-sm font-bold text-white truncate">{entity.name}</div>
-                                        {/* Badge for Type */}
-                                        {isHardCut && (
-                                            <span className={`text-[9px] px-1.5 py-0.5 rounded border uppercase ${
-                                                entity.type === 'BANK' 
-                                                    ? 'border-orange-900 bg-orange-900/20 text-orange-500' 
-                                                    : 'border-red-900 bg-red-900/20 text-red-500'
-                                            }`}>
-                                                {entity.type === 'BANK' ? 'SWITCH BANK' : 'OUTLET CUT'}
-                                            </span>
-                                        )}
-                                        {isOffline && (
-                                             <span className="text-[9px] bg-red-900/40 text-red-400 border border-red-900 px-1 rounded">OFFLINE</span>
+                                    {/* Icon */}
+                                    <div className={`w-10 h-10 flex items-center justify-center rounded bg-gray-900 border shrink-0 ${isHardCut ? 'border-red-900 text-red-500' : 'border-blue-900 text-blue-500'}`}>
+                                        {isHardCut ? (
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+                                        ) : (
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
                                         )}
                                     </div>
-                                    <div className="text-xs text-gray-500 font-mono truncate">
-                                        {isHardCut 
-                                            ? (entity.subDevices && entity.subDevices.length > 0 
-                                                ? `Hard Power Cut: Affects ${entity.subDevices.map((d: any) => d.name).join(', ')}` 
-                                                : "Hard Power Cut (Empty Socket)")
-                                            : `${entity.shutdownMethod} Command @ ${entity.ipAddress || 'Unknown IP'}`
-                                        }
-                                    </div>
-                                </div>
 
-                                {/* Countdown / Delay Display */}
-                                <div className="flex items-center gap-2 bg-gray-900 px-3 py-1 rounded border border-gray-700 z-10">
-                                    {currentCountdown !== undefined && currentCountdown > 0 ? (
+                                    {/* Name & Details */}
+                                    <div className="min-w-0">
                                         <div className="flex items-center gap-2">
-                                            <span className="text-[10px] text-red-500 font-mono animate-pulse font-bold">SHUTDOWN IN</span>
-                                            <span className="text-lg text-red-500 font-mono font-bold">{currentCountdown}s</span>
+                                            <div className="text-sm font-bold text-white truncate">{entity.name}</div>
+                                            {isHardCut && (
+                                                <span className={`text-[9px] px-1.5 py-0.5 rounded border uppercase ${
+                                                    entity.type === 'BANK' 
+                                                        ? 'border-orange-900 bg-orange-900/20 text-orange-500' 
+                                                        : 'border-red-900 bg-red-900/20 text-red-500'
+                                                }`}>
+                                                    {entity.type === 'BANK' ? 'SWITCH BANK' : 'OUTLET CUT'}
+                                                </span>
+                                            )}
+                                            {isOffline && (
+                                                 <span className="text-[9px] bg-red-900/40 text-red-400 border border-red-900 px-1 rounded">OFFLINE</span>
+                                            )}
                                         </div>
-                                    ) : (
-                                        <>
-                                            <span className="text-[10px] text-gray-500 font-mono uppercase">Delay</span>
-                                            <input 
-                                                type="number"
-                                                min="0"
-                                                disabled={!isEnabled}
-                                                value={isEnabled ? draftSeq?.delaySeconds : ''}
-                                                onChange={(e) => updateDelayLocal(entity.id, parseInt(e.target.value))}
-                                                className="w-16 bg-transparent text-right font-mono text-neon-cyan font-bold focus:outline-none disabled:text-gray-700"
-                                                placeholder="-"
-                                            />
-                                            <span className="text-xs text-gray-500">sec</span>
-                                        </>
-                                    )}
+                                        <div className="text-xs text-gray-500 font-mono truncate">
+                                            {isHardCut 
+                                                ? (entity.subDevices?.length > 0 ? `Affects: ${entity.subDevices.map((d:any)=>d.name).join(', ')}` : "Controls Empty Socket")
+                                                : `${entity.shutdownMethod} Protocol @ ${entity.ipAddress || 'Unknown IP'}`
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Controls Section */}
+                                <div className={`flex items-center gap-4 z-10 transition-opacity ${isEnabled ? 'opacity-100' : 'opacity-30 pointer-events-none'}`}>
+                                    
+                                    {/* Trigger Type Toggle */}
+                                    <div className="flex bg-gray-900 border border-gray-700 rounded p-0.5">
+                                        <button 
+                                            onClick={() => updateRuleLocal(entity.id, 'TIMER', ruleValue)}
+                                            className={`px-3 py-1.5 text-[10px] font-mono rounded transition-colors ${ruleType === 'TIMER' ? 'bg-blue-900/50 text-blue-300' : 'text-gray-500 hover:text-white'}`}
+                                        >
+                                            ⏱ TIMER
+                                        </button>
+                                        <button 
+                                            onClick={() => updateRuleLocal(entity.id, 'BATTERY', ruleValue)}
+                                            className={`px-3 py-1.5 text-[10px] font-mono rounded transition-colors ${ruleType === 'BATTERY' ? 'bg-green-900/50 text-green-300' : 'text-gray-500 hover:text-white'}`}
+                                        >
+                                            🔋 BATTERY
+                                        </button>
+                                    </div>
+
+                                    {/* Value Input */}
+                                    <div className="flex items-center gap-2 bg-gray-900 px-2 py-1 rounded border border-gray-700 w-32">
+                                        <input 
+                                            type="number"
+                                            min="0"
+                                            value={ruleValue}
+                                            onChange={(e) => updateRuleLocal(entity.id, ruleType, parseInt(e.target.value))}
+                                            className={`w-full bg-transparent text-right font-mono font-bold focus:outline-none ${ruleType === 'BATTERY' ? 'text-green-400' : 'text-blue-400'}`}
+                                        />
+                                        <span className="text-[10px] text-gray-500 font-mono w-8">
+                                            {ruleType === 'TIMER' ? 'SEC' : '% CAP'}
+                                        </span>
+                                    </div>
+
+                                    {/* Hint Text */}
+                                    <div className="w-24 text-[9px] text-gray-500 font-mono text-right leading-tight hidden lg:block">
+                                        {ruleType === 'TIMER' ? 'After Outage' : 'Trigger Level'}
+                                    </div>
                                 </div>
                             </div>
                         );

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 
@@ -17,7 +16,7 @@ const LoginScreen: React.FC<Props> = ({ onLogin, lockoutEndTime, remainingAttemp
   const [timeLeft, setTimeLeft] = useState(0);
 
   useEffect(() => {
-      let interval: NodeJS.Timeout;
+      let interval: ReturnType<typeof setTimeout>;
       if (lockoutEndTime) {
           const update = () => {
               const diff = Math.max(0, lockoutEndTime - Date.now());
