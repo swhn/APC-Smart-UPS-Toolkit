@@ -194,8 +194,3 @@ export enum TabId {
 }
 
 export type SystemNode = 'GRID' | 'UPS' | 'LOAD' | 'BATTERY';
-
-export enum AIModelType {
-  CHAT = 'gemini-3-flash-preview',
-  IMAGE = 'gemini-3-pro-image-preview'
-}

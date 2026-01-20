@@ -1,9 +1,0 @@
-
-version: '3.8'
-
-services:
-  snmp-sim:
-    build: ./docker/simulator
-    ports:
-      - "1161:161/udp" # Map host 1161 to container 161 (avoids root requirement on host)
-    restart: always

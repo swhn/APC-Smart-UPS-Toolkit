@@ -7,9 +7,10 @@ interface Props {
   setIsSimulating: (isSimulating: boolean) => void;
   config: SystemConfiguration;
   onUpdateConfig: (newConfig: SystemConfiguration) => void;
+  onHelp?: (context: string) => void;
 }
 
-const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, config, onUpdateConfig }) => {
+const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, config, onUpdateConfig, onHelp }) => {
   const [thermalRunawayActive, setThermalRunawayActive] = useState(false);
   const [brownoutActive, setBrownoutActive] = useState(false);
   const scenarioIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -144,7 +145,12 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
             
             <div className="border-b border-gray-800 pb-4 flex justify-between items-end">
                 <div>
-                    <h2 className="text-xl font-mono text-neon-orange">SIMULATION LAB</h2>
+                    <div className="flex items-center gap-2">
+                         <h2 className="text-xl font-mono text-neon-orange">SIMULATION LAB</h2>
+                         {onHelp && (
+                            <button onClick={() => onHelp('simulation')} className="w-5 h-5 rounded-full border border-gray-600 text-gray-500 flex items-center justify-center text-[10px] hover:text-neon-cyan hover:border-neon-cyan transition-colors">?</button>
+                         )}
+                    </div>
                     <p className="text-xs text-gray-500 font-mono mt-1">
                         Test system responses, alarms, and shutdown sequences without physical hardware events.
                         <span className="block text-neon-orange mt-1 font-bold">⚠ WARNING: ACTIONS HERE TRIGGER REAL APPLICATION ALERTS.</span>

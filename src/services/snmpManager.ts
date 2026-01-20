@@ -14,10 +14,6 @@ export class SnmpManager {
   private pollingInterval: number;
   private isCrisisMode: boolean = false;
   private listeners: SNMPCallback[] = [];
-  
-  // Proxy configuration
-  private useProxy: boolean = false;
-  private proxyUrl: string = 'http://localhost:3001/api/ups-status';
 
   constructor(ip: string, community: string = 'public', pollingInterval: number = 5000) {
     this.targetIp = ip;
@@ -28,9 +24,7 @@ export class SnmpManager {
   public connect(): void {
     // 1. Detect Environment
     if ((window as any).process?.type === 'renderer' || typeof window !== 'undefined') {
-        console.log("[SNMP] Browser Environment detected. Switching to Proxy Mode.");
-        this.useProxy = true;
-        this.startPolling();
+        console.warn("[SNMP] Browser Environment detected. Native SNMP is not supported in the browser. Please use the Simulation tab.");
         return;
     }
 
@@ -85,48 +79,25 @@ export class SnmpManager {
     }
   }
 
-  private async poll(): Promise<void> {
-    if (this.useProxy) {
-        await this.pollViaProxy();
-    } else {
-        this.pollViaNative();
-    }
-  }
-
-  private async pollViaProxy(): Promise<void> {
-      try {
-          const response = await fetch(this.proxyUrl);
-          if (!response.ok) throw new Error("Proxy connection failed");
-          
-          const rawData = await response.json();
-          // The proxy returns { key: value } using the OID_MAP keys directly
-          // We need to shape it slightly differently for the existing logic, or just parse it here
-          
-          // Since proxy returns resolved keys (e.g. { inputVoltage: 120 }), 
-          // we can map this directly to UPSData with minor parsing
-          const parsedData = this.mapProxyDataToUPSData(rawData);
-          this.notifyListeners(parsedData);
-          this.checkCrisis(parsedData);
-
-      } catch (e) {
-          // console.warn("[SNMP Proxy] Fetch failed (Is proxy-server.js running?)", e);
-      }
-  }
-
-  private pollViaNative(): void {
+  private poll(): void {
     if (!this.session) return;
     
     const oids = Object.values(OID_MAP);
     
-    this.session.get(oids, (error: any, varbinds: any[]) => {
-      if (error) {
-        console.error("[SNMP] Fetch Error:", error);
-      } else {
-        const parsedData = this.mapVarbindsToUPSData(varbinds);
-        this.notifyListeners(parsedData);
-        this.checkCrisis(parsedData);
-      }
-    });
+    try {
+        this.session.get(oids, (error: any, varbinds: any[]) => {
+          if (error) {
+            console.error("[SNMP] Fetch Error:", error);
+          } else {
+            const parsedData = this.mapVarbindsToUPSData(varbinds);
+            this.notifyListeners(parsedData);
+            this.checkCrisis(parsedData);
+          }
+        });
+    } catch (e) {
+        console.error("[SNMP] Polling Error (Session likely invalid):", e);
+        this.stopPolling();
+    }
   }
 
   private checkCrisis(data: Partial<UPSData>) {
@@ -140,68 +111,6 @@ export class SnmpManager {
       } else if (!isCritical && this.isCrisisMode) {
           this.setCrisisMode(false);
       }
-  }
-
-  private mapProxyDataToUPSData(rawData: any): Partial<UPSData> {
-      const data: Partial<UPSData> = {};
-      const parseNum = (val: any) => (val ? parseInt(val) : 0);
-
-      // Status Logic
-      const rawStatus = parseNum(rawData.upsBasicOutputStatus);
-      const battStatus = parseNum(rawData.batteryStatus);
-      
-      if (rawStatus === 3) {
-          data.status = battStatus === 3 ? 'LOW_BATTERY' : 'ON_BATTERY';
-      } else if (rawStatus === 2) {
-          data.status = 'ONLINE';
-      } else if (rawStatus === 4) {
-          data.status = 'CALIBRATING';
-      } else if (rawStatus === 10) {
-          data.status = 'OVERLOAD';
-      } else {
-          data.status = 'ONLINE';
-      }
-
-      data.inputVoltage = parseNum(rawData.inputVoltage);
-      data.outputVoltage = parseNum(rawData.outputVoltage);
-      data.batteryCapacity = parseNum(rawData.batteryCapacity);
-      data.loadPercentage = parseNum(rawData.outputLoad);
-      data.batteryTemp = parseNum(rawData.batteryTemperature);
-      
-      let freq = parseNum(rawData.inputFrequency);
-      if (freq > 100) freq = freq / 10;
-      data.inputFrequency = freq;
-
-      data.firmwareVersion = rawData.firmwareVersion || 'Unknown';
-      data.modelName = rawData.identModel || 'Unknown';
-      data.batteryReplaceDate = rawData.batteryReplaceDate || 'Unknown';
-
-      const rawRuntime = rawData.runtimeRemaining;
-      data.runtimeRemaining = rawRuntime ? Math.floor(parseNum(rawRuntime) / 100) : 0;
-
-      data.outputAmps = parseNum(rawData.outputAmps);
-      
-      const rawBattVolt = parseNum(rawData.batteryVoltage);
-      data.batteryVoltage = rawBattVolt ? rawBattVolt / 10 : 0;
-
-      data.batteryNeedsReplacement = parseNum(rawData.batteryReplaceIndicator) === 2;
-      
-      const extPacks = parseNum(rawData.externalBatteryCount);
-      data.batteryPackCount = 1 + (isNaN(extPacks) ? 0 : extPacks);
-      
-      // Default calcs
-      const v = data.batteryVoltage || 24;
-      if (v > 160) data.batteryNominalVoltage = 192;
-      else if (v > 80) data.batteryNominalVoltage = 96;
-      else if (v > 40) data.batteryNominalVoltage = 48;
-      else if (v > 30) data.batteryNominalVoltage = 36;
-      else data.batteryNominalVoltage = 24;
-
-      const estimatedVA = (data.loadPercentage || 0) * 15;
-      data.apparentPowerVA = estimatedVA;
-      data.realPowerW = estimatedVA * 0.9;
-
-      return data;
   }
 
   private mapVarbindsToUPSData(varbinds: any[]): Partial<UPSData> {
@@ -284,7 +193,6 @@ export class SnmpManager {
     
     // Estimate Nominal Voltage if not manually set
     // Rough heuristic: Round raw voltage to nearest standard (24, 36, 48, 96, 192)
-    // This is temporary until overriden by config, but gives a decent default
     const v = data.batteryVoltage || 24;
     if (v > 160) data.batteryNominalVoltage = 192;
     else if (v > 80) data.batteryNominalVoltage = 96;

@@ -21,9 +21,10 @@ interface Props {
   enableAudibleAlarms: boolean;
   activeCountdowns?: SequenceCountdownMap;
   deviceList?: Device[];
+  onHelp?: (context: string) => void;
 }
 
-const CommandDeck: React.FC<Props> = ({ data, enableAudibleAlarms, activeCountdowns = {}, deviceList = [] }) => {
+const CommandDeck: React.FC<Props> = ({ data, enableAudibleAlarms, activeCountdowns = {}, deviceList = [], onHelp }) => {
   const [stealthMode, setStealthMode] = useState(false);
   const [selectedNode, setSelectedNode] = useState<SystemNode | null>(null);
   const [showShutdownModal, setShowShutdownModal] = useState(false);
@@ -189,6 +190,9 @@ const CommandDeck: React.FC<Props> = ({ data, enableAudibleAlarms, activeCountdo
             <div className="flex-1">
                 <h2 className="text-neon-cyan text-base md:text-xl font-mono tracking-widest border-b border-neon-cyan/30 pb-1 mb-2 flex items-center gap-2">
                     SYSTEM STATUS
+                    {onHelp && (
+                        <button onClick={() => onHelp('dashboard_overview')} className="w-4 h-4 rounded-full border border-neon-cyan/50 text-neon-cyan flex items-center justify-center text-[10px] hover:bg-neon-cyan hover:text-black transition-colors" title="Help">?</button>
+                    )}
                 </h2>
                 <div className={`text-2xl md:text-4xl font-mono font-bold ${isCrisis ? 'text-neon-orange animate-pulse' : 'text-neon-green'}`}>
                     {data.status}

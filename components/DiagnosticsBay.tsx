@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { UPSData, SystemConfiguration } from '../types';
 import { COLORS } from '../constants';
@@ -8,9 +7,10 @@ interface Props {
   data: UPSData;
   config: SystemConfiguration;
   setStatus: (status: UPSData['status']) => void;
+  onHelp?: (context: string) => void;
 }
 
-const DiagnosticsBay: React.FC<Props> = ({ data, config, setStatus }) => {
+const DiagnosticsBay: React.FC<Props> = ({ data, config, setStatus, onHelp }) => {
   const [calibStatus, setCalibStatus] = useState<'IDLE' | 'RUNNING' | 'COMPLETE' | 'ERROR'>('IDLE');
   const [progress, setProgress] = useState(0);
 
@@ -166,7 +166,12 @@ const DiagnosticsBay: React.FC<Props> = ({ data, config, setStatus }) => {
         {/* Header with High-Vis Temperature */}
         <div className="flex justify-between items-start mb-6 border-b border-gray-800 pb-4">
             <div>
-                <h3 className="text-neon-cyan font-mono text-sm mb-1 font-bold">BATTERY ARRAY TOPOLOGY</h3>
+                <div className="flex items-center gap-2">
+                    <h3 className="text-neon-cyan font-mono text-sm mb-1 font-bold">BATTERY ARRAY TOPOLOGY</h3>
+                    {onHelp && (
+                        <button onClick={() => onHelp('diagnostics_calibration')} className="w-4 h-4 rounded-full border border-gray-600 text-gray-500 flex items-center justify-center text-[10px] hover:text-neon-cyan hover:border-neon-cyan transition-colors">?</button>
+                    )}
+                </div>
                 <div className="text-gray-500 text-xs font-mono">BUS: {nominalVoltage}V DC | {totalPacks} PARALLEL STRING(S)</div>
             </div>
             
