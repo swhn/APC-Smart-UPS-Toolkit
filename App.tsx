@@ -40,13 +40,13 @@ const MainAppContent: React.FC = () => {
       currentUser, failedLoginAttempts, lockoutEndTime, handleLogin, handleLogout 
   } = useAuth({ settings, handleUpdateSettings, addEvent, notify });
 
-  // 3. UPS System Logic (Polling, Sim Physics, Energy)
+  // 3. UPS System Logic (Event Listener)
   const {
       activeUpsId, setActiveUpsId, allUpsData, currentUpsData, setSingleUpsData,
       energyHistory, isUpsSimulating, setIsUpsSimulating, handleResetEnergy
   } = useUpsSystem({ settings, sysConfig, currentUser, handleUpdateConfig, addEvent, notify });
 
-  // 4. Phoenix Protocol (Shutdown Sequencing, Device Sim)
+  // 4. Phoenix Protocol (Event Listener)
   const {
       deviceStatuses, activeCountdowns, shutdownTriggered, isDeviceSimulating,
       setIsDeviceSimulating, setShutdownTriggered
@@ -132,7 +132,6 @@ const MainAppContent: React.FC = () => {
 
   const restoreSystemConfig = async () => {
       // Reload config from storage (which should be clean of simulation artifacts)
-      // This effectively "resets" the view to the real configuration
       await reloadConfigFromStorage();
       setIsDeviceSimulating(false);
       addEvent('Simulation Ends. Real configuration restored.', 'INFO', 'SYSTEM');
@@ -341,10 +340,13 @@ const MainAppContent: React.FC = () => {
   );
 };
 
-const App: React.FC = () => (
-    <NotificationProvider>
-        <MainAppContent />
-    </NotificationProvider>
-);
+// Root App Component Wrapping Context
+const App: React.FC = () => {
+    return (
+        <NotificationProvider>
+            <MainAppContent />
+        </NotificationProvider>
+    );
+};
 
 export default App;

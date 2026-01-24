@@ -5,7 +5,7 @@ import { COLORS } from '../constants';
 import { SystemNode } from '../types';
 
 interface PowerStreamProps {
-  status: 'ONLINE' | 'ON_BATTERY' | 'CALIBRATING' | 'OVERLOAD' | 'LOW_BATTERY';
+  status: 'ONLINE' | 'ON_BATTERY' | 'CALIBRATING' | 'OVERLOAD' | 'LOW_BATTERY' | 'UNKNOWN';
   batteryLevel: number;
   onSelectNode: (node: SystemNode) => void;
 }
@@ -132,13 +132,14 @@ const FlowParticle = ({ path, color, delay, duration = 2, flicker = false }: { p
 );
 
 const PowerStream: React.FC<PowerStreamProps> = ({ status, batteryLevel, onSelectNode }) => {
+  const isUnknown = status === 'UNKNOWN';
   const isOnBattery = status === 'ON_BATTERY' || status === 'LOW_BATTERY';
   const isOnline = status === 'ONLINE' || status === 'CALIBRATING';
   const isOverload = status === 'OVERLOAD';
   
-  const gridColor = isOnBattery ? COLORS.gray : COLORS.green;
-  const flowColor = isOverload ? COLORS.red : (isOnBattery ? COLORS.orange : COLORS.cyan);
-  const batteryColor = batteryLevel < 30 ? COLORS.red : (isOnBattery ? COLORS.orange : COLORS.cyan);
+  const gridColor = (isOnBattery || isUnknown) ? COLORS.gray : COLORS.green;
+  const flowColor = isOverload ? COLORS.red : (isOnBattery ? COLORS.orange : (isUnknown ? COLORS.gray : COLORS.cyan));
+  const batteryColor = batteryLevel < 30 ? COLORS.red : (isOnBattery ? COLORS.orange : (isUnknown ? COLORS.gray : COLORS.cyan));
 
   // --- Layout Geometry (ViewBox 600x320) ---
   const GRID = { x: 80, y: 60 };

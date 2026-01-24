@@ -1,300 +1,35 @@
 
-import { Device, ShutdownMethod } from "../types";
-import * as snmp from 'net-snmp';
+import { Device } from "../types";
 
-/**
- * Service to handle remote device operations.
- * 
- * NOTE: In a strictly browser-based environment (React), direct TCP/UDP sockets (SSH/SNMP) 
- * are restricted by browser security sandboxes. 
- * 
- * - HTTP_POST: Uses real `fetch`.
- * - SSH: Simulates the handshake protocol latency and steps.
- * - SNMP/HARD_CUT: Uses `net-snmp` logic (which would work in Electron/Node) but 
- *   gracefully handles browser limitations by simulating the packet flow if imports fail.
- */
 export class DeviceControlService {
     
     /**
-     * Verifies connectivity to the device based on its configured method.
+     * Verifies connectivity using the Main Process TCP handshake.
      */
     static async verifyConnection(device: Device): Promise<boolean> {
-        console.log(`[DeviceControl] Verifying connection to ${device.name} (${device.ipAddress}) via ${device.shutdownMethod}...`);
-
-        if (device.shutdownMethod === 'HARD_CUT') {
-            return true;
+        if (!window.electron) {
+            console.warn("Electron API not available. Running in browser mode (Simulated).");
+            return true; // Fallback for dev without Electron
         }
-
-        if (!device.ipAddress) {
-            console.warn(`[DeviceControl] Verification Failed: No IP provided for ${device.shutdownMethod}`);
-            return false;
-        }
-
-        // Auth Check for Protocols that require it
-        const requiresBasicAuth = ['SSH', 'VMWARE_REST', 'SYNOLOGY_API', 'QNAP_API'].includes(device.shutdownMethod);
-        if (requiresBasicAuth && (!device.auth?.username || !device.auth?.password)) {
-            console.warn(`[DeviceControl] Verification Failed: Missing Credentials for ${device.shutdownMethod}`);
-            return false;
-        }
-
-        if (device.shutdownMethod === 'SNMP_SET' && !device.auth?.community) {
-             console.warn(`[DeviceControl] Verification Failed: Missing SNMP Community String`);
-             return false;
-        }
-
-        // --- HTTP Based Checks (REST APIs, Agents) ---
-        if (['HTTP_POST', 'VMWARE_REST', 'SYNOLOGY_API', 'QNAP_API', 'AGENT_WIN', 'AGENT_LINUX'].includes(device.shutdownMethod)) {
-            try {
-                const controller = new AbortController();
-                const id = setTimeout(() => controller.abort(), 2000);
-                
-                // Construct a dummy ping URL based on protocol
-                let url = `http://${device.ipAddress}`;
-                if (device.shutdownMethod === 'VMWARE_REST') url = `https://${device.ipAddress}/rest/com/vmware/cis/session`;
-                if (device.shutdownMethod === 'SYNOLOGY_API') url = `http://${device.ipAddress}:5000/webapi/auth.cgi`;
-                if (device.shutdownMethod.includes('AGENT')) url = `http://${device.ipAddress}:4444/status`; // Agent Port
-
-                await fetch(url, { 
-                    method: 'HEAD', 
-                    signal: controller.signal,
-                    mode: 'no-cors' // Opaque response is fine, we just want to know if it didn't timeout
-                });
-                clearTimeout(id);
-                return true;
-            } catch (e) {
-                // In demo/sim, allow non-timeout errors (likely CORS or self-signed certs)
-                console.log(`[DeviceControl] ${device.shutdownMethod} Reachable (simulated).`);
-                return true; 
-            }
-        }
-
-        // --- Simulation for Non-HTTP Protocols (SSH/SNMP/NUT) ---
-        await this.simulateNetworkDelay(800);
-        
-        // Mock: Fail if IP starts with '10.0.0.99' (Dead IP simulation)
-        if (device.ipAddress === '10.0.0.99') return false; 
-
-        return true;
+        return await window.electron.device.verify(device);
     }
 
     /**
-     * Attempts to shut down a remote device.
+     * Executes the configured shutdown method via Main Process.
      */
     static async shutdownDevice(device: Device): Promise<boolean> {
-        console.log(`%c[DeviceControl] Initiating PROTOCOL: ${device.shutdownMethod} -> ${device.name}`, 'color: #00F0FF; font-weight: bold;');
+        console.log(`[DeviceControl] Requesting Shutdown for ${device.name}`);
+        
+        if (!window.electron) {
+            console.warn("Electron API not available. Simulation: Shutdown successful.");
+            return true;
+        }
 
-        if (!device.ipAddress && device.shutdownMethod !== 'HARD_CUT') {
-            console.error(`[DeviceControl] Failed: No IP Address for ${device.name}`);
+        try {
+            return await window.electron.device.shutdown(device);
+        } catch (error) {
+            console.error(`[DeviceControl] IPC Error:`, error);
             return false;
         }
-
-        switch (device.shutdownMethod) {
-            case 'SSH':
-                return this.handleSSHShutdown(device);
-            case 'HTTP_POST':
-                return this.handleHTTPShutdown(device);
-            case 'VMWARE_REST':
-                return this.handleVMwareShutdown(device);
-            case 'SYNOLOGY_API':
-            case 'QNAP_API':
-                return this.handleNasShutdown(device);
-            case 'AGENT_WIN':
-            case 'AGENT_LINUX':
-                return this.handleAgentShutdown(device);
-            case 'SNMP_SET':
-                return this.handleSNMPShutdown(device);
-            case 'HARD_CUT':
-                return this.handleHardCut(device);
-            default:
-                console.error("Unknown shutdown method");
-                return false;
-        }
-    }
-
-    // --- PROTOCOL IMPLEMENTATIONS ---
-
-    private static async handleVMwareShutdown(device: Device): Promise<boolean> {
-        console.groupCollapsed(`[VMware] ESXi/vCenter API: ${device.ipAddress}`);
-        try {
-            await this.simulateNetworkDelay(300);
-            const user = device.auth?.username || 'root';
-            console.log(`> POST /rest/com/vmware/cis/session (Auth as '${user}')`);
-            
-            // Simulation logic would use real credentials here
-            if (user === 'fail') throw new Error("Auth Failed");
-
-            console.log(`< 200 OK (Session ID: 7f8a...)`);
-            
-            await this.simulateNetworkDelay(500);
-            console.log(`> GET /rest/vcenter/vm?filter.power_states=POWERED_ON`);
-            console.log(`< 200 OK (Found 4 running VMs)`);
-            
-            await this.simulateNetworkDelay(800);
-            console.log(`> POST /rest/vcenter/vm/.../power/stop (Soft Guest Shutdown)`);
-            console.log(`< 200 OK (Signal sent to guests)`);
-            
-            await this.simulateNetworkDelay(1000);
-            console.log(`> POST /rest/esx/hosts/.../power/shutdown`);
-            console.log(`< 200 OK (Host shutdown initiated)`);
-            return true;
-        } catch(e) { 
-            console.error(e);
-            return false; 
-        } finally { console.groupEnd(); }
-    }
-
-    private static async handleNasShutdown(device: Device): Promise<boolean> {
-        const isSynology = device.shutdownMethod === 'SYNOLOGY_API';
-        const label = isSynology ? 'Synology DSM' : 'QNAP QTS';
-        const user = device.auth?.username || 'admin';
-        
-        console.groupCollapsed(`[NAS] ${label} API: ${device.ipAddress}`);
-        try {
-            await this.simulateNetworkDelay(300);
-            console.log(`> GET /webapi/auth.cgi?api=SYNO.API.Auth&method=login&account=${user}`);
-            console.log(`< 200 OK (SID: xxxx)`);
-            
-            await this.simulateNetworkDelay(400);
-            console.log(`> POST /webapi/entry.cgi?api=SYNO.Core.System&method=shutdown`);
-            console.log(`< 200 OK (System is going down)`);
-            return true;
-        } catch(e) { return false; } finally { console.groupEnd(); }
-    }
-
-    private static async handleAgentShutdown(device: Device): Promise<boolean> {
-        const os = device.shutdownMethod === 'AGENT_WIN' ? 'Windows' : 'Linux';
-        const secret = device.auth?.secretKey ? '***' : 'NONE';
-        
-        console.groupCollapsed(`[Agent] APC Toolkit Agent (${os}): ${device.ipAddress}:4444`);
-        try {
-            await this.simulateNetworkDelay(200);
-            console.log(`> TCP Connect Port 4444`);
-            console.log(`< Connected. Protocol v1.0`);
-            
-            await this.simulateNetworkDelay(200);
-            console.log(`> CMD: EXECUTE_SHUTDOWN --force --delay=0 --auth=${secret}`);
-            console.log(`< ACK. Executing 'shutdown /s /t 0' locally.`);
-            return true;
-        } catch(e) { return false; } finally { console.groupEnd(); }
-    }
-
-    private static async handleSSHShutdown(device: Device): Promise<boolean> {
-        console.groupCollapsed(`[SSH] Sequence: ${device.ipAddress}`);
-        try {
-            await this.simulateNetworkDelay(200);
-            console.log(`> TCP SYN sent to ${device.ipAddress}:22`);
-            await this.simulateNetworkDelay(300);
-            console.log(`< TCP ACK received`);
-            console.log(`> Protocol: SSH-2.0-OpenSSH_8.9p1`);
-            await this.simulateNetworkDelay(400);
-            console.log(`> Key Exchange Init (Curve25519)`);
-            console.log(`< Host Key Verified: SHA256:xxxx...`);
-            await this.simulateNetworkDelay(300);
-            console.log(`> Authentication: Password for user '${device.auth?.username || 'root'}'`);
-            console.log(`< Auth Success. Session Opened.`);
-            await this.simulateNetworkDelay(300);
-            console.log(`> EXEC: "sudo shutdown -h now"`);
-            console.log(`< STDERR: Shutdown scheduled for Now.`);
-            console.log(`> Channel EOF`);
-            console.log(`> Disconnect`);
-            return true;
-        } catch (e) {
-            console.error(e);
-            return false;
-        } finally {
-            console.groupEnd();
-        }
-    }
-
-    private static async handleHTTPShutdown(device: Device): Promise<boolean> {
-        const endpoint = `http://${device.ipAddress}/api/system/shutdown`;
-        console.log(`[HTTP] POST ${endpoint}`);
-
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-            // Attempt actual fetch with headers if provided
-            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-            if (device.auth?.secretKey) {
-                headers['Authorization'] = `Bearer ${device.auth.secretKey}`;
-            }
-
-            await fetch(endpoint, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({ action: 'shutdown', force: true }),
-                mode: 'no-cors', // Important for local network devices without CORS headers
-                signal: controller.signal
-            });
-            
-            clearTimeout(timeoutId);
-            console.log(`[HTTP] 200 OK (Simulated or Opaque). Payload delivered.`);
-            return true;
-
-        } catch (error: any) {
-            if (error.name === 'AbortError') {
-                console.error(`[HTTP] Request timed out.`);
-                return false;
-            }
-            console.warn(`[HTTP] Network/CORS validation failed, but command sent. Assuming success for simulation.`);
-            return true;
-        }
-    }
-
-    private static async handleSNMPShutdown(device: Device): Promise<boolean> {
-        const targetOid = '1.3.6.1.4.1.9.2.1.55.0'; // Example Cisco Shutdown OID
-        const community = device.auth?.community || 'private';
-        
-        console.log(`[SNMP] Opening UDP Socket to ${device.ipAddress}:161...`);
-        
-        try {
-            // Attempt to use real net-snmp if environment allows (Node/Electron)
-            if (typeof window !== 'undefined') {
-                throw new Error("Browser Env");
-            }
-
-            const session = snmp.createSession(device.ipAddress!, community, { timeout: 1000 });
-            
-            console.log(`[SNMP] SET OID: ${targetOid}`);
-            console.log(`[SNMP] VALUE: 2 (Integer)`);
-            
-            // Simulation of packet transit
-            await this.simulateNetworkDelay(500);
-            console.log(`[SNMP] Response: noError (0)`);
-            return true;
-        } catch (e) {
-            console.warn(`[SNMP] Browser restriction detected. Simulating packet delivery with community '${community}'.`);
-            await this.simulateNetworkDelay(500);
-            return true;
-        }
-    }
-
-    private static async handleHardCut(device: Device): Promise<boolean> {
-        if (!device.assignedOutlet) {
-            console.error("[HARD_CUT] FAILED: No outlet assigned to device.");
-            return false;
-        }
-
-        // APC PowerNet MIB - sPDUOutletControlOutletCommand
-        // 1 = On, 2 = Off, 3 = Reboot
-        const outletOid = `1.3.6.1.4.1.318.1.1.4.4.2.1.3.${device.assignedOutlet}`;
-        
-        console.log(`%c[UPS MASTER CONTROL] EXECUTING HARD POWER CUT`, 'color: red; font-weight: bold');
-        console.log(`[SNMP] Target: UPS Controller (Gateway)`);
-        console.log(`[SNMP] SET OID: ${outletOid}`);
-        console.log(`[SNMP] VALUE: 2 (Immediate Off)`);
-
-        await this.simulateNetworkDelay(800);
-
-        // Verification logic
-        console.log(`[SNMP] Response: noError (0)`);
-        console.log(`[HARD_CUT] Power dropped on Bank ${device.assignedOutlet}.`);
-        
-        return true;
-    }
-
-    private static simulateNetworkDelay(ms: number): Promise<void> {
-        return new Promise(resolve => setTimeout(resolve, ms));
     }
 }

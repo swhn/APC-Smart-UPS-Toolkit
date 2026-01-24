@@ -6,7 +6,7 @@ export interface UPSData {
   batteryCapacity: number; // Percentage
   loadPercentage: number;
   // Fix: Added 'LOW_BATTERY' to status type to resolve type errors in comparisons
-  status: 'ONLINE' | 'ON_BATTERY' | 'CALIBRATING' | 'OVERLOAD' | 'LOW_BATTERY';
+  status: 'ONLINE' | 'ON_BATTERY' | 'CALIBRATING' | 'OVERLOAD' | 'LOW_BATTERY' | 'UNKNOWN';
   runtimeRemaining: number; // Seconds
   batteryTemp: number; // Celsius
   outputAmps: number;
@@ -36,7 +36,8 @@ export type ShutdownMethod =
 
 export interface DeviceAuth {
     username?: string;
-    password?: string;
+    password?: string; // Used for Basic Auth (VMware, NAS) or SSH Password
+    sshKeyPath?: string; // Path to private key (PEM/OpenSSH) for SSH connections. Replaces password.
     community?: string; // SNMP
     secretKey?: string; // Agents / Webhooks
 }
@@ -194,3 +195,46 @@ export enum TabId {
 }
 
 export type SystemNode = 'GRID' | 'UPS' | 'LOAD' | 'BATTERY';
+
+export interface EnergyPoint {
+  timestamp: number;
+  dateStr: string;
+  watts: number;
+  kwh: number;
+  alarms: number;
+}
+
+// --- IPC PAYLOADS ---
+export interface SystemStatePayload {
+    upsData: Record<string, UPSData>;
+    deviceStatuses: DeviceStatusMap;
+    energyHistory: EnergyPoint[];
+}
+
+export interface PhoenixUpdatePayload {
+    countdowns: SequenceCountdownMap;
+    shutdownTriggered: boolean;
+}
+
+// --- ELECTRON IPC BRIDGE TYPE ---
+declare global {
+  interface Window {
+    electron: {
+      snmp: {
+        get: (ip: string, community: string, oids: string[]) => Promise<{ success: boolean, data?: any, error?: string }>;
+      };
+      device: {
+        verify: (device: Device) => Promise<boolean>;
+        shutdown: (device: Device) => Promise<boolean>;
+      };
+      storage: {
+        save: (key: string, data: any) => Promise<boolean>;
+        load: (key: string) => Promise<any>;
+      }
+    };
+    electronAPI: {
+      onSystemStateUpdate: (callback: (payload: SystemStatePayload) => void) => () => void;
+      onPhoenixCountdownUpdate: (callback: (payload: PhoenixUpdatePayload) => void) => () => void;
+    };
+  }
+}
