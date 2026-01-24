@@ -139,12 +139,8 @@ export const INITIAL_DATA: any = {
   batteryNominalVoltage: 24
 };
 
-export const INITIAL_DEVICES: Device[] = [
-    { id: 'd1', name: 'Main Server', type: 'SERVER', powerDraw: 450, shutdownMethod: 'SSH', ipAddress: '192.168.1.10' },
-    { id: 'd2', name: 'Network Switch', type: 'NETWORK', powerDraw: 50, shutdownMethod: 'SNMP_SET', ipAddress: '192.168.1.2' },
-    { id: 'd3', name: 'NAS Storage', type: 'STORAGE', powerDraw: 120, shutdownMethod: 'HTTP_POST', ipAddress: '192.168.1.15' },
-    { id: 'd4', name: 'Modem', type: 'NETWORK', powerDraw: 15, shutdownMethod: 'HARD_CUT' },
-];
+// Start with NO devices for production readiness
+export const INITIAL_DEVICES: Device[] = [];
 
 export const INITIAL_SYS_CONFIG: SystemConfiguration = {
   virtualRack: { 
