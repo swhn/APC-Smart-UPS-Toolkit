@@ -5,18 +5,32 @@ import { UPSData, SystemConfiguration, Device } from '../types';
 interface Props {
   upsData: UPSData;
   setUpsData: React.Dispatch<React.SetStateAction<UPSData>>;
-  setIsSimulating: (isSimulating: boolean) => void;
-  isSimulating: boolean;
+  isUpsSimulating: boolean;
+  setIsUpsSimulating: (val: boolean) => void;
+  isDeviceSimulating: boolean;
+  setIsDeviceSimulating: (val: boolean) => void;
   config: SystemConfiguration;
   onUpdateConfig: (newConfig: SystemConfiguration) => void;
+  onRestoreConfig: () => void; // New Prop to revert system state
   onHelp?: (context: string) => void;
 }
 
-const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, isSimulating, config, onUpdateConfig, onHelp }) => {
+const SimulationLab: React.FC<Props> = ({ 
+    upsData, 
+    setUpsData, 
+    isUpsSimulating, 
+    setIsUpsSimulating,
+    isDeviceSimulating,
+    setIsDeviceSimulating,
+    config, 
+    onUpdateConfig, 
+    onRestoreConfig,
+    onHelp 
+}) => {
   const [thermalRunawayActive, setThermalRunawayActive] = useState(false);
   const [brownoutActive, setBrownoutActive] = useState(false);
   const scenarioIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  
   // Clean up scenarios on unmount
   useEffect(() => {
       return () => {
@@ -24,9 +38,22 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
       };
   }, []);
 
+  const toggleDeviceSimulation = () => {
+      const newState = !isDeviceSimulating;
+      
+      if (newState) {
+          // TURNING ON: Inject Fake Devices
+          injectTestDevices();
+      } else {
+          // TURNING OFF: Restore Real Configuration from Storage
+          onRestoreConfig();
+      }
+      setIsDeviceSimulating(newState);
+  };
+
   const triggerScenario = (scenario: 'NORMAL' | 'POWER_CUT' | 'OVERLOAD' | 'LOW_BATTERY' | 'BROWNOUT' | 'THERMAL_RUNAWAY') => {
-      // Auto-enable simulation if a scenario is clicked, though controls are usually disabled if off
-      if (!isSimulating) setIsSimulating(true);
+      // Auto-enable UPS simulation if a scenario is clicked
+      if (!isUpsSimulating) setIsUpsSimulating(true);
       
       setThermalRunawayActive(false);
       setBrownoutActive(false);
@@ -46,8 +73,6 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
                   batteryTemp: 28,
                   outputAmps: 8.5
               }));
-              // Only scenario where we might want to "stop" simulation logic loop but keep mode active?
-              // Actually, NORMAL just sets values. The main loop in App.tsx might drift them.
               break;
           case 'POWER_CUT':
               setUpsData(prev => ({
@@ -88,7 +113,6 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
               scenarioIntervalRef.current = setInterval(() => {
                   setUpsData(prev => {
                       const newVolt = 90 + Math.random() * 15; // 90-105V
-                      // If drops below 92, switch to battery briefly
                       const isSag = newVolt < 92;
                       return {
                           ...prev,
@@ -107,7 +131,7 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
                       return {
                           ...prev,
                           batteryTemp: newTemp,
-                          status: newTemp > 60 ? 'OVERLOAD' : prev.status // Simulate fail at 60C
+                          status: newTemp > 60 ? 'OVERLOAD' : prev.status
                       };
                   });
               }, 1000);
@@ -125,7 +149,6 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
           { id: 'sim_mon_01', name: 'Env-Monitor', type: 'OTHER', shutdownMethod: 'HARD_CUT', powerDraw: 15, status: 'ONLINE', assignedOutlet: 6 },
       ];
 
-      // Assign to layout
       const newOutlets: any = {};
       mockDevices.forEach(d => {
           if (d.assignedOutlet) {
@@ -141,7 +164,6 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
               unassignedDevices: []
           }
       });
-      alert("Virtual Rack populated with simulated hardware topology.");
   };
 
   return (
@@ -157,32 +179,48 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
                          )}
                     </div>
                     <p className="text-xs text-gray-500 font-mono mt-1">
-                        Test system responses, alarms, and shutdown sequences without physical hardware events.
-                        <span className="block text-neon-orange mt-1 font-bold">⚠ WARNING: ACTIONS HERE TRIGGER REAL APPLICATION ALERTS.</span>
+                        Override system inputs to test failover protocols.
                     </p>
                 </div>
                 
-                {/* Main Simulation Toggle Switch */}
-                <div className="flex flex-col items-end gap-2">
-                    <div className="text-[10px] font-mono text-gray-500 tracking-wider">MASTER SIMULATION CONTROL</div>
-                    <button 
-                        onClick={() => setIsSimulating(!isSimulating)}
-                        className={`w-16 h-8 rounded-full border relative transition-all duration-300 ${isSimulating ? 'bg-neon-orange/20 border-neon-orange' : 'bg-gray-900 border-gray-700'}`}
-                    >
-                        <div className={`absolute top-1 w-6 h-6 rounded-full transition-all duration-300 shadow-lg ${isSimulating ? 'left-8 bg-neon-orange shadow-[0_0_10px_#FF9900]' : 'left-1 bg-gray-500'}`}></div>
-                    </button>
-                    <div className={`text-xs font-bold font-mono ${isSimulating ? 'text-neon-orange animate-pulse' : 'text-gray-600'}`}>
-                        {isSimulating ? 'SIMULATION ACTIVE' : 'LIVE DATA MODE'}
+                {/* DUAL TOGGLES */}
+                <div className="flex items-center gap-6">
+                    {/* UPS Simulation Toggle */}
+                    <div className="flex flex-col items-end gap-2">
+                        <div className="text-[10px] font-mono text-gray-500 tracking-wider">UPS DATA SIM</div>
+                        <button 
+                            onClick={() => setIsUpsSimulating(!isUpsSimulating)}
+                            className={`w-12 h-6 rounded-full border relative transition-all duration-300 ${isUpsSimulating ? 'bg-neon-orange/20 border-neon-orange' : 'bg-gray-900 border-gray-700'}`}
+                        >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full transition-all duration-300 shadow-lg ${isUpsSimulating ? 'left-7 bg-neon-orange shadow-[0_0_10px_#FF9900]' : 'left-1 bg-gray-500'}`}></div>
+                        </button>
+                        <div className={`text-[10px] font-bold font-mono ${isUpsSimulating ? 'text-neon-orange' : 'text-gray-600'}`}>
+                            {isUpsSimulating ? 'ON' : 'OFF'}
+                        </div>
+                    </div>
+
+                    {/* Device Simulation Toggle */}
+                    <div className="flex flex-col items-end gap-2">
+                        <div className="text-[10px] font-mono text-gray-500 tracking-wider">DEVICE RACK SIM</div>
+                        <button 
+                            onClick={toggleDeviceSimulation}
+                            className={`w-12 h-6 rounded-full border relative transition-all duration-300 ${isDeviceSimulating ? 'bg-blue-500/20 border-blue-500' : 'bg-gray-900 border-gray-700'}`}
+                        >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full transition-all duration-300 shadow-lg ${isDeviceSimulating ? 'left-7 bg-blue-500 shadow-[0_0_10px_blue]' : 'left-1 bg-gray-500'}`}></div>
+                        </button>
+                        <div className={`text-[10px] font-bold font-mono ${isDeviceSimulating ? 'text-blue-500' : 'text-gray-600'}`}>
+                            {isDeviceSimulating ? 'VIRTUAL' : 'REAL'}
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 transition-opacity duration-300 ${!isSimulating ? 'opacity-50 pointer-events-none grayscale' : 'opacity-100'}`}>
+            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 transition-opacity duration-300 ${!isUpsSimulating ? 'opacity-50 pointer-events-none grayscale' : 'opacity-100'}`}>
                 
                 {/* 1. Event Scenarios */}
                 <div className="space-y-6">
                     <div className="bg-black border border-gray-800 p-6 rounded relative overflow-hidden">
-                        <h3 className="text-sm font-mono text-white mb-6 tracking-widest border-b border-gray-800 pb-2">CRITICAL EVENTS</h3>
+                        <h3 className="text-sm font-mono text-white mb-6 tracking-widest border-b border-gray-800 pb-2">CRITICAL EVENTS (UPS)</h3>
                         <div className="grid grid-cols-2 gap-4">
                             <button onClick={() => triggerScenario('POWER_CUT')} className="bg-red-900/20 border border-red-500/50 text-red-500 py-4 hover:bg-red-900/50 hover:border-red-500 font-mono text-xs font-bold transition-all">
                                 BLACKOUT (0V)
@@ -269,27 +307,12 @@ const SimulationLab: React.FC<Props> = ({ upsData, setUpsData, setIsSimulating, 
                             />
                         </div>
                     </div>
-
-                    <div className="bg-gray-900/50 border border-gray-800 p-6 rounded">
-                        <h3 className="text-sm font-mono text-white mb-4 tracking-widest border-b border-gray-800 pb-2">HARDWARE INJECTION</h3>
-                        <p className="text-[10px] text-gray-400 font-mono mb-4">
-                            Injects a predefined set of Servers, Network Gear, and Storage devices into the Virtual Rack to test layout logic and Shutdown Sequence protocols.
-                        </p>
-                        <button 
-                            onClick={injectTestDevices}
-                            // Hardware injection is allowed even if live, though it might be confusing. 
-                            // Keeping it disabled when sim is off for consistency.
-                            className="w-full py-3 bg-blue-900/20 text-blue-400 border border-blue-900 hover:bg-blue-900/40 hover:text-white font-mono text-xs font-bold transition-all"
-                        >
-                            POPULATE TEST RACK
-                        </button>
-                    </div>
                 </div>
             </div>
             
-            {!isSimulating && (
+            {!isUpsSimulating && (
                 <div className="text-center text-xs text-gray-500 font-mono mt-4 italic">
-                    Simulation controls are locked. Switch to "Simulation Active" to override live telemetry.
+                    UPS Simulation controls locked. Enable "UPS DATA SIM" to override SNMP values.
                 </div>
             )}
         </div>

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { TabId, UPSData, SystemConfiguration, AppSettings, UserProfile, LogEntry, LayoutType, DeviceStatusMap, SequenceCountdownMap, Device } from './types';
 import { INITIAL_DATA, INITIAL_SYS_CONFIG, INITIAL_SETTINGS } from './constants';
@@ -54,6 +55,13 @@ const MainAppContent: React.FC = () => {
   
   // Helper to get active data, safely falling back
   const currentUpsData = allUpsData[activeUpsId] || INITIAL_DATA;
+  
+  // -- REF FOR SMOOTH TIMERS --
+  // Critical for the shutdown loop to access freshest data without resetting the interval
+  const latestUpsDataRef = useRef(currentUpsData);
+  useEffect(() => {
+      latestUpsDataRef.current = currentUpsData;
+  }, [currentUpsData]);
 
   // -- REAL-TIME STATUS STATE (Volatile) --
   const [deviceStatuses, setDeviceStatuses] = useState<DeviceStatusMap>({});
@@ -68,7 +76,9 @@ const MainAppContent: React.FC = () => {
   // inside the setInterval loop, preventing stale closures and duplicate firings.
   const triggeredDevicesRef = useRef<Set<string>>(new Set());
 
-  const [isSimulating, setIsSimulating] = useState(false);
+  // --- DUAL SIMULATION STATE ---
+  const [isUpsSimulating, setIsUpsSimulating] = useState(false);
+  const [isDeviceSimulating, setIsDeviceSimulating] = useState(false);
   
   // Protocol State
   const [shutdownTriggered, setShutdownTriggered] = useState(false); // Used for Global Alert
@@ -101,7 +111,6 @@ const MainAppContent: React.FC = () => {
   
   // Timers
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const protocolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- LOGGING HELPER (Hoisted) ---
   const addEvent = (message: string, severity: LogEntry['severity'] = 'INFO', source: LogEntry['source'] = 'SYSTEM') => {
@@ -170,9 +179,9 @@ const MainAppContent: React.FC = () => {
 
           const updates: DeviceStatusMap = {};
 
-          if (isSimulating) {
+          if (isDeviceSimulating) {
               allDevices.forEach(d => {
-                  updates[d.id] = Math.random() > 0.95 ? 'OFFLINE' : 'ONLINE';
+                  updates[d.id] = Math.random() > 0.98 ? 'OFFLINE' : 'ONLINE';
               });
               setDeviceStatuses(prev => ({ ...prev, ...updates }));
               return;
@@ -194,7 +203,7 @@ const MainAppContent: React.FC = () => {
       checkHeartbeats(); 
 
       return () => clearInterval(interval);
-  }, [currentUser, sysConfig.virtualRack, isSimulating]);
+  }, [currentUser, sysConfig.virtualRack, isDeviceSimulating]);
 
 
   // --- PHOENIX PROTOCOL & DYNAMIC LOAD SHEDDING ENGINE ---
@@ -221,18 +230,21 @@ const MainAppContent: React.FC = () => {
 
     // EVALUATE RULES (Run loop if Outage Active)
     if (isOnBattery) {
+        // Run interval for countdowns. Access data via Ref to avoid resetting interval.
         const interval = setInterval(() => evaluateShutdownRules(), 1000);
         return () => clearInterval(interval);
     }
 
-  }, [currentUpsData.status, outageStartTime, currentUser, currentUpsData.batteryCapacity]); 
+  }, [currentUpsData.status, outageStartTime, currentUser]); 
 
   const evaluateShutdownRules = () => {
       if (!outageStartTime) return;
 
       const now = Date.now();
       const secondsSinceOutage = Math.floor((now - outageStartTime) / 1000);
-      const currentCapacity = currentUpsData.batteryCapacity;
+      
+      // Access FRESH data from Ref
+      const currentCapacity = latestUpsDataRef.current.batteryCapacity;
 
       // 1. Check Global Failsafe
       if (currentCapacity < sysConfig.phoenixProtocol.shutdownThreshold && !shutdownTriggered) {
@@ -306,16 +318,22 @@ const MainAppContent: React.FC = () => {
           
           addEvent(`TRIGGER (${reasonText}): ${isHardCut ? 'HARD CUT' : 'SHUTDOWN'} -> ${device.name}`, 'CRITICAL', 'PHOENIX');
           
-          // Execute
-          const success = await DeviceControlService.shutdownDevice(device);
-          
-          if (success) {
-              addEvent(`${device.name} command SUCCESS.`, 'SUCCESS', 'PHOENIX');
-              setDeviceStatuses(prev => ({ ...prev, [deviceId]: 'OFFLINE' }));
-              notify({ type: 'SUCCESS', message: `Load Shed: ${device.name}` });
+          if (isDeviceSimulating) {
+              setTimeout(() => {
+                  addEvent(`[SIMULATION] ${device.name} shutdown command sent.`, 'SUCCESS', 'PHOENIX');
+                  setDeviceStatuses(prev => ({ ...prev, [deviceId]: 'OFFLINE' }));
+                  notify({ type: 'SUCCESS', message: `[SIM] Load Shed: ${device.name}` });
+              }, 1000);
           } else {
-              addEvent(`${device.name} command FAILED.`, 'CRITICAL', 'PHOENIX');
-              notify({ type: 'ERROR', message: `Shutdown Failed: ${device.name}` });
+              const success = await DeviceControlService.shutdownDevice(device);
+              if (success) {
+                  addEvent(`${device.name} command SUCCESS.`, 'SUCCESS', 'PHOENIX');
+                  setDeviceStatuses(prev => ({ ...prev, [deviceId]: 'OFFLINE' }));
+                  notify({ type: 'SUCCESS', message: `Load Shed: ${device.name}` });
+              } else {
+                  addEvent(`${device.name} command FAILED.`, 'CRITICAL', 'PHOENIX');
+                  notify({ type: 'ERROR', message: `Shutdown Failed: ${device.name}` });
+              }
           }
       }
   };
@@ -367,6 +385,12 @@ const MainAppContent: React.FC = () => {
       StorageService.saveConfig(newConfig);
   };
 
+  // Allow Simulation Lab to revert changes when disabled
+  const restoreSystemConfig = async () => {
+      const saved = await StorageService.loadConfig();
+      setSysConfig(saved);
+  };
+
   const handleUpdateSettings = (newSettings: AppSettings) => {
       setSettings(newSettings);
       StorageService.saveSettings(newSettings);
@@ -394,7 +418,8 @@ const MainAppContent: React.FC = () => {
 
   // --- MULTI-UPS SNMP MANAGEMENT ---
   useEffect(() => {
-    if (isSimulating || !currentUser) {
+    // Stop Polling if UPS Simulation is ON
+    if (isUpsSimulating || !currentUser) {
         snmpManagersRef.current.forEach(m => m.stopPolling());
         snmpManagersRef.current.clear();
         return;
@@ -440,7 +465,7 @@ const MainAppContent: React.FC = () => {
             snmpManagersRef.current.set(upsConf.id, manager);
         }
     });
-  }, [settings.upsRegistry, isSimulating, currentUser]);
+  }, [settings.upsRegistry, isUpsSimulating, currentUser]);
 
   // Auto-detect layout
   useEffect(() => {
@@ -464,9 +489,9 @@ const MainAppContent: React.FC = () => {
       if (!isLogOpen) setHasNewLogs(false);
   };
 
-  // Simulation Loop
+  // Simulation Loop - UPS Physics
   useEffect(() => {
-    if (!isSimulating || !currentUser) return;
+    if (!isUpsSimulating || !currentUser) return;
     const interval = setInterval(() => {
         setAllUpsData(prevAll => {
             const current = prevAll[activeUpsId] || INITIAL_DATA;
@@ -481,7 +506,7 @@ const MainAppContent: React.FC = () => {
         });
     }, 1000);
     return () => clearInterval(interval);
-  }, [isSimulating, currentUser, activeUpsId]);
+  }, [isUpsSimulating, currentUser, activeUpsId]);
 
   const handleLogin = async (username: string, password: string): Promise<boolean> => {
     if (lockoutEndTime && Date.now() < lockoutEndTime) return false;
@@ -639,11 +664,22 @@ const MainAppContent: React.FC = () => {
             />
         );
       case TabId.DIAGNOSTICS: 
-        return <DiagnosticsBay data={currentUpsData} config={sysConfig} setStatus={(status) => { setSingleUpsData(prev => ({ ...prev, status })); addEvent(`System status changed to ${status}`, status === 'ONLINE' ? 'SUCCESS' : 'WARNING'); }} onHelp={handleNavigateToHelp} />;
+        return <DiagnosticsBay data={currentUpsData} config={sysConfig} setStatus={(status) => { setSingleUpsData(prev => ({ ...prev, status })); addEvent(`System status changed to ${status}`, status === 'ONLINE' ? 'SUCCESS' : 'WARNING'); }} />;
       case TabId.ENERGY_MONITOR: 
         return <EnergyMonitor data={currentUpsData} history={energyHistory} />;
       case TabId.SIMULATION:
-          return <SimulationLab upsData={currentUpsData} setUpsData={setSingleUpsData} setIsSimulating={setIsSimulating} isSimulating={isSimulating} config={sysConfig} onUpdateConfig={handleUpdateConfig} onHelp={handleNavigateToHelp} />;
+          return <SimulationLab 
+                  upsData={currentUpsData} 
+                  setUpsData={setSingleUpsData} 
+                  isUpsSimulating={isUpsSimulating}
+                  setIsUpsSimulating={setIsUpsSimulating}
+                  isDeviceSimulating={isDeviceSimulating}
+                  setIsDeviceSimulating={setIsDeviceSimulating}
+                  config={sysConfig} 
+                  onUpdateConfig={handleUpdateConfig} 
+                  onRestoreConfig={restoreSystemConfig}
+                  onHelp={handleNavigateToHelp} 
+                />;
       case TabId.EVENTS_LOGS:
         return <EventsLog logs={eventLogs} onClearLogs={() => setEventLogs([])} />;
       case TabId.SETTINGS: 
@@ -756,7 +792,8 @@ const MainAppContent: React.FC = () => {
                   {activeTab.replace('_', ' ')}
               </h1>
               <div className="hidden md:flex gap-4 text-xs">
-                  {isSimulating && <span className="text-neon-orange animate-pulse font-bold">[SIMULATION MODE ACTIVE]</span>}
+                  {isUpsSimulating && <span className="text-neon-orange animate-pulse font-bold">[UPS SIM ACTIVE]</span>}
+                  {isDeviceSimulating && <span className="text-blue-500 animate-pulse font-bold">[DEV SIM ACTIVE]</span>}
                   <span className="text-green-500">SNMP: {settings.upsRegistry.find(u => u.id === activeUpsId)?.targetIp}</span>
                   <span className="text-gray-600">|</span>
                   <span className="text-neon-cyan">USER: {currentUser.username} [{currentUser.role}]</span>
